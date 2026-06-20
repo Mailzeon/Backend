@@ -136,4 +136,36 @@ router.get('/leaderboard', async (_req: Request, res: Response) => {
   sendSuccess(res, 'Leaderboard fetched.', top);
 });
 
+
+// ── Weekly Analytics (real data for dashboard charts) ────────────────────────
+router.get('/analytics', async (_req: Request, res: Response) => {
+  const days = [];
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+  for (let i = 6; i >= 0; i--) {
+    const start = new Date();
+    start.setDate(start.getDate() - i);
+    start.setHours(0, 0, 0, 0);
+
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+
+    const [revenueAgg, orderCount] = await Promise.all([
+      Order.aggregate([
+        { $match: { status: 'completed', completedAt: { $gte: start, $lt: end } } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]),
+      Order.countDocuments({ createdAt: { $gte: start, $lt: end } }),
+    ]);
+
+    days.push({
+      day:     dayNames[start.getDay()],
+      revenue: revenueAgg[0]?.total ?? 0,
+      orders:  orderCount,
+    });
+  }
+
+  sendSuccess(res, 'Analytics fetched.', days);
+});
+
 export default router;
