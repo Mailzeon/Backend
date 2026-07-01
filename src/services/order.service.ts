@@ -1,7 +1,11 @@
-import { Order, IOrder } from '../models/Order.model';
-import { Settings } from '../models/Settings.model';
-import { walletService } from './wallet.service';
-import { notificationService } from './notification.service';
+import { Order, IOrder }        from '../models/Order.model';
+import { Dispute }              from '../models/Dispute.model';
+import { Notification }        from '../models/Notification.model';
+import { User }                 from '../models/User.model';
+import { Settings }             from '../models/Settings.model';
+import { walletService }        from './wallet.service';
+import { notificationService }  from './notification.service';
+import { workerLevelService }   from './workerLevel.service';
 import { startOrderTimer, clearOrderTimer } from '../utils/orderTimer';
 import { emitToUser, emitToMarketplace, EVENTS } from '../socket/events';
 
@@ -9,9 +13,25 @@ const throwErr = (msg: string, code = 400): never => {
   throw Object.assign(new Error(msg), { statusCode: code });
 };
 
+// ─── Settings cache (5-minute TTL) ───────────────────────────────────────────
+// Settings rarely change. Caching avoids a DB round-trip on every order action.
+const settingsCache: Record<string, { value: string; expiresAt: number }> = {};
+const SETTINGS_TTL = 5 * 60 * 1000; // 5 minutes
+
 const getSetting = async (key: string, fallback: string): Promise<string> => {
+  const now = Date.now();
+  if (settingsCache[key] && settingsCache[key].expiresAt > now) {
+    return settingsCache[key].value;
+  }
   const s = await Settings.findOne({ key }).lean();
-  return s?.value ?? fallback;
+  const value = s?.value ?? fallback;
+  settingsCache[key] = { value, expiresAt: now + SETTINGS_TTL };
+  return value;
+};
+
+/** Call this when admin changes a setting so the cache refreshes immediately. */
+export const invalidateSettingsCache = (): void => {
+  Object.keys(settingsCache).forEach(k => delete settingsCache[k]);
 };
 
 export const orderService = {
@@ -49,8 +69,6 @@ export const orderService = {
     const now          = new Date();
     const timerExpires = new Date(now.getTime() + timerMinutes * 60 * 1000);
 
-    // Atomic — only succeeds if status is still 'pending' AND workerId is null.
-    // Prevents two workers accepting the same order simultaneously.
     const order = await Order.findOneAndUpdate(
       { _id: orderId, status: 'pending', workerId: null },
       { status: 'accepted', workerId, acceptedAt: now, timerExpiresAt: timerExpires },
@@ -83,7 +101,7 @@ export const orderService = {
     const order = await Order.findOne({ _id: orderId, workerId, status: 'accepted' });
     if (!order) throwErr('Order not found or not in accepted state.', 404);
 
-    clearOrderTimer(orderId); // Stop the 10-minute countdown
+    clearOrderTimer(orderId);
 
     const autoHours = parseInt(await getSetting('autoCompleteHours', '24'));
     const now       = new Date();
@@ -95,7 +113,6 @@ export const orderService = {
     order!.autoCompleteAt         = autoAt;
     await order!.save();
 
-    // Hold earnings in pending until customer confirms
     await walletService.moveToPending(
       workerId,
       order!.workerEarning,
@@ -160,18 +177,16 @@ export const orderService = {
     return order!;
   },
 
-  // ── Customer: request a NEW code (previous expired) ──────────────────────
+  // ── Customer: request a NEW code ─────────────────────────────────────────
   async requestNewCode(orderId: string, customerId: string): Promise<IOrder> {
-    // BUG FIX: Added status check — only allowed from verification_pending state
     const order = await Order.findOne({
       _id: orderId,
       customerId,
-      status: 'verification_pending',  // ← was missing, allowed on any order
+      status: 'verification_pending',
       workerId: { $ne: null },
     });
     if (!order) throwErr('Order not in verification state.', 400);
 
-    // BUG FIX: Use $unset to properly remove the old code from DB
     await Order.findByIdAndUpdate(orderId, { $unset: { verificationCode: 1 } });
     order.verificationCode = undefined;
 
@@ -229,20 +244,63 @@ export const orderService = {
 
     emitToUser(workerId,   EVENTS.ORDER_COMPLETED, { orderId });
     emitToUser(customerId, EVENTS.ORDER_COMPLETED, { orderId });
+
+    // FIX: Recalculate worker level after every completion (previously only
+    // happened when a customer left a rating — most orders never got recalculated)
+    workerLevelService.recalculate(workerId).catch(err =>
+      console.error('[WorkerLevel] Recalculate error after confirmSuccess:', err)
+    );
+
     return order;
   },
 
-  // ── Customer: report problem ──────────────────────────────────────────────
-  async reportProblem(orderId: string, customerId: string): Promise<IOrder> {
+  // ── Customer: report problem — FIX: now creates Dispute document too ──────
+  // Previously this only changed order.status to 'under_review'. No Dispute
+  // document was ever created, so the admin Disputes panel was always empty.
+  async reportProblem(
+    orderId: string,
+    customerId: string,
+    reason: string = 'other',
+    description?: string
+  ): Promise<IOrder> {
     const order = await Order.findOne({
       _id: orderId,
       customerId,
       status: { $in: ['credentials_submitted', 'verification_pending'] },
     });
     if (!order) throwErr('This order cannot be disputed in its current state.', 400);
+    if (!order.workerId) throwErr('No worker assigned to this order.', 400);
 
+    // 1. Set order to under_review
     order.status = 'under_review';
     await order.save();
+
+    // 2. Create the Dispute document
+    const existing = await Dispute.findOne({ orderId: order._id });
+    if (!existing) {
+      await Dispute.create({
+        orderId:    order._id,
+        customerId: order.customerId,
+        workerId:   order.workerId,
+        reason,
+        description,
+      });
+
+      // Notify all admins
+      const admins = await User.find({ role: 'admin' }).select('_id');
+      if (admins.length > 0) {
+        await Notification.insertMany(admins.map(a => ({
+          userId:    a._id,
+          title:     '🚨 New Dispute',
+          message:   `Customer raised a dispute for Order #${order._id.toString().slice(-6).toUpperCase()}.`,
+          type:      'dispute',
+          orderId:   order._id,
+          isRead:    false,
+          createdAt: new Date(),
+        })));
+      }
+    }
+
     return order;
   },
 
@@ -257,7 +315,6 @@ export const orderService = {
 
     if (!isCustomer && !isWorker && !isAdmin) throwErr('Access denied.', 403);
 
-    // Customers must NEVER see email/password credentials
     if (role === 'customer') {
       const safe = order!.toObject();
       delete safe.credentials;
