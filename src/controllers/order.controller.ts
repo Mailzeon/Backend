@@ -27,7 +27,9 @@ export const submitCredentials = async (req: Request, res: Response) => {
     sendError(res, 'Email and password are required.', 400); return;
   }
   const order = await orderService.submitCredentials(
-    req.params.id, req.user!._id.toString(), { email: email.trim(), password: password.trim(), notes }
+    req.params.id,
+    req.user!._id.toString(),
+    { email: email.trim(), password: password.trim(), notes }
   );
   sendSuccess(res, 'Credentials submitted successfully.', order);
 };
@@ -62,11 +64,22 @@ export const confirmSuccess = async (req: Request, res: Response) => {
   sendSuccess(res, 'Order confirmed as successful. Worker earnings released.', order);
 };
 
+// FIX: now accepts reason and description from request body and forwards
+// them to the service so an actual Dispute document gets created with the
+// customer's actual selected reason (previously always defaulted to 'other').
 export const reportProblem = async (req: Request, res: Response) => {
+  const { reason, description } = req.body;
+
+  const validReasons = ['wrong_password', 'unable_to_login', 'account_issue', 'other'];
+  const finalReason  = validReasons.includes(reason) ? reason : 'other';
+
   const order = await orderService.reportProblem(
-    req.params.id, req.user!._id.toString()
+    req.params.id,
+    req.user!._id.toString(),
+    finalReason,
+    description?.trim()
   );
-  sendSuccess(res, 'Problem reported. Order is under review.', order);
+  sendSuccess(res, 'Problem reported. Admin is reviewing your case.', order);
 };
 
 export const getOrder = async (req: Request, res: Response) => {
