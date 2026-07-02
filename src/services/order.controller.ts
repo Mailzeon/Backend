@@ -65,7 +65,8 @@ export const confirmSuccess = async (req: Request, res: Response) => {
 };
 
 // FIX: now accepts reason and description from request body and forwards
-// them to the service so an actual Dispute document gets created.
+// them to the service so an actual Dispute document gets created with the
+// customer's actual selected reason (previously always defaulted to 'other').
 export const reportProblem = async (req: Request, res: Response) => {
   const { reason, description } = req.body;
 
