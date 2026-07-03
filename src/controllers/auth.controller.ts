@@ -1,19 +1,13 @@
 import { Request, Response } from 'express';
 import { authService } from '../services/auth.service';
-import { sendSuccess, sendError } from '../utils/response';
+import { sendSuccess } from '../utils/response';
+
+// Manual validation checks below are now redundant for well-formed requests
+// since the `validate(schema)` middleware runs first and guarantees shape —
+// kept minimal here as the controller no longer needs to re-check them.
 
 export const register = async (req: Request, res: Response): Promise<void> => {
   const { name, email, password, role } = req.body;
-
-  if (!name?.trim() || !email?.trim() || !password || !role) {
-    sendError(res, 'Name, email, password, and role are required.', 400); return;
-  }
-  if (!['customer', 'worker'].includes(role)) {
-    sendError(res, 'Role must be customer or worker.', 400); return;
-  }
-  if (password.length < 6) {
-    sendError(res, 'Password must be at least 6 characters.', 400); return;
-  }
 
   const result = await authService.register({ name, email, password, role });
   const message = role === 'worker'
@@ -25,14 +19,20 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 
 export const login = async (req: Request, res: Response): Promise<void> => {
   const { email, password } = req.body;
-  if (!email?.trim() || !password) {
-    sendError(res, 'Email and password are required.', 400); return;
-  }
-  const result = await authService.login(email.trim(), password);
+  const result = await authService.login(email, password);
   sendSuccess(res, 'Logged in successfully.', result);
 };
 
 export const getMe = async (req: Request, res: Response): Promise<void> => {
   // req.user is populated by authenticate middleware
   sendSuccess(res, 'User fetched.', req.user);
+};
+
+// New: change password for the currently logged-in user.
+// Useful for the seeded admin account (admin@marketplace.com) to rotate
+// away from the default password after first login.
+export const changePassword = async (req: Request, res: Response): Promise<void> => {
+  const { currentPassword, newPassword } = req.body;
+  await authService.changePassword(req.user!._id.toString(), currentPassword, newPassword);
+  sendSuccess(res, 'Password changed successfully.');
 };
