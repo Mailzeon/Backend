@@ -60,4 +60,18 @@ export const authService = {
     if (!user) throwHttpError('User not found.', 404);
     return user!;
   },
+
+  // New: verifies current password, then hashes and saves the new one.
+  // Works for any role — customers, workers, and the seeded admin account.
+  async changePassword(userId: string, currentPassword: string, newPassword: string): Promise<void> {
+    const user = await User.findById(userId).select('+password');
+    if (!user) throwHttpError('User not found.', 404);
+
+    const valid = await user!.comparePassword(currentPassword);
+    if (!valid) throwHttpError('Current password is incorrect.', 401);
+
+    // Assigning triggers the pre('save') bcrypt hash hook on User.model.ts
+    user!.password = newPassword;
+    await user!.save();
+  },
 };
