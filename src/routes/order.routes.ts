@@ -7,7 +7,7 @@ import {
   submitCodeSchema, reportProblemSchema,
 } from '../validators/order.validator';
 import {
-  createOrder, getMarketplace, acceptOrder, submitCredentials,
+  createOrder, cancelOrder, getMarketplace, acceptOrder, submitCredentials,
   requestVerificationCode, submitVerificationCode, requestNewCode,
   confirmSuccess, reportProblem, getOrder, getMyOrders, getAssignedOrders,
 } from '../controllers/order.controller';
@@ -18,6 +18,7 @@ router.use(authenticate);
 // Customer routes
 router.post('/',                      requireRole('customer'), validate(createOrderSchema), createOrder);
 router.get('/my',                     requireRole('customer'), getMyOrders);
+router.patch('/:id/cancel',           requireRole('customer'), cancelOrder);
 router.patch('/:id/request-code',     requireRole('customer'), requestVerificationCode);
 router.patch('/:id/request-new-code', requireRole('customer'), requestNewCode);
 router.patch('/:id/confirm',          requireRole('customer'), confirmSuccess);
