@@ -16,20 +16,16 @@ import notificationRoutes from './routes/notification.routes';
 import ratingRoutes       from './routes/rating.routes';
 import disputeRoutes      from './routes/dispute.routes';
 import adminRoutes        from './routes/admin.routes';
+import settingsRoutes     from './routes/settings.routes';
 
 export const app = express();
 
 // ── Security headers ────────────────────────────────────────────────────────
-// Sets X-Frame-Options, X-Content-Type-Options, Strict-Transport-Security, etc.
-// crossOriginResourcePolicy is relaxed to 'cross-origin' since the frontend
-// (Vercel) and backend (Render) are on different origins.
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
-// In production FRONTEND_URL is set to the Vercel URL.
-// We allow both the exact URL and localhost for development.
 const allowedOrigins = [
   env.FRONTEND_URL,
   'http://localhost:3000',
@@ -38,7 +34,6 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, Postman, server-to-server)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
     callback(new Error(`CORS: Origin ${origin} not allowed`));
@@ -52,12 +47,9 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // ── NoSQL injection protection ────────────────────────────────────────────────
-// Strips any key starting with '$' or containing '.' from req.body/query/params.
-// This is defense-in-depth on top of Zod validation on individual routes.
 app.use(mongoSanitize());
 
 // ── Rate limiting (applied to all /api routes) ────────────────────────────────
-// Stricter limits on individual auth routes are applied in auth.routes.ts.
 app.use('/api', globalLimiter);
 
 // ── Health check — Render uses this to detect the server is alive ─────────────
@@ -75,6 +67,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/ratings',       ratingRoutes);
 app.use('/api/disputes',      disputeRoutes);
 app.use('/api/admin',         adminRoutes);
+app.use('/api/settings',      settingsRoutes);
 
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => {
