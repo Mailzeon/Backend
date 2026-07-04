@@ -33,6 +33,18 @@ export const invalidateSettingsCache = (): void => {
   Object.keys(settingsCache).forEach(k => delete settingsCache[k]);
 };
 
+// FIX: New export — lets any logged-in user (customer/worker, even the public
+// register page) read the CURRENT order price and worker earning values.
+// This is what powers the dynamic ₹ amounts on the frontend instead of the
+// old hardcoded ₹50 / ₹20 text that no longer matched admin-configured prices.
+export const getPublicSettings = async (): Promise<{ orderPrice: number; workerEarning: number }> => {
+  const [orderPrice, workerEarning] = await Promise.all([
+    getSetting('orderPrice', '50'),
+    getSetting('workerEarning', '20'),
+  ]);
+  return { orderPrice: parseInt(orderPrice), workerEarning: parseInt(workerEarning) };
+};
+
 export const orderService = {
   // ── Customer: create order ────────────────────────────────────────────────
   async createOrder(customerId: string, serviceName: string): Promise<IOrder> {
@@ -55,8 +67,6 @@ export const orderService = {
   },
 
   // ── Customer: cancel a pending (not yet accepted) order ───────────────────
-  // Only allowed while status is still 'pending' — once a worker accepts,
-  // the customer must use the dispute flow instead of a direct cancel.
   async cancelOrder(orderId: string, customerId: string): Promise<IOrder> {
     const order = await Order.findOneAndUpdate(
       { _id: orderId, customerId, status: 'pending', workerId: null },
