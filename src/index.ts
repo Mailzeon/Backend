@@ -5,6 +5,7 @@ import { connectDatabase }      from './config/database';
 import { initSocket }           from './socket/socket';
 import { startAutoCompleteJob } from './utils/autoComplete';
 import { recoverOrderTimers }   from './utils/recoverTimers';
+import { startKeepAlive }       from './utils/keepAlive';
 import { seedDefaultSettings }  from './models/Settings.model';
 import { seedAdminUser }        from './utils/seedAdmin';
 import { env }                  from './config/env';
@@ -17,8 +18,6 @@ const start = async (): Promise<void> => {
     await connectDatabase();
     await seedDefaultSettings();
     await seedAdminUser();
-
-    // Restart any in-memory timers that were lost during server restart
     await recoverOrderTimers();
 
     server.listen(env.PORT, () => {
@@ -32,6 +31,7 @@ const start = async (): Promise<void> => {
     });
 
     startAutoCompleteJob();
+    startKeepAlive();
   } catch (error) {
     console.error('❌ Failed to start server:', error);
     process.exit(1);
