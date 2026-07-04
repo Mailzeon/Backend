@@ -9,6 +9,12 @@ export const createOrder = async (req: Request, res: Response) => {
   sendSuccess(res, 'Order created successfully.', order, 201);
 };
 
+// New: customer cancels an order that is still pending (no worker assigned yet).
+export const cancelOrder = async (req: Request, res: Response) => {
+  const order = await orderService.cancelOrder(req.params.id, req.user!._id.toString());
+  sendSuccess(res, 'Order cancelled successfully.', order);
+};
+
 export const getMarketplace = async (_req: Request, res: Response) => {
   const orders = await orderService.getMarketplaceOrders();
   sendSuccess(res, 'Marketplace orders fetched.', orders);
@@ -64,9 +70,6 @@ export const confirmSuccess = async (req: Request, res: Response) => {
   sendSuccess(res, 'Order confirmed as successful. Worker earnings released.', order);
 };
 
-// FIX: now accepts reason and description from request body and forwards
-// them to the service so an actual Dispute document gets created with the
-// customer's actual selected reason (previously always defaulted to 'other').
 export const reportProblem = async (req: Request, res: Response) => {
   const { reason, description } = req.body;
 
