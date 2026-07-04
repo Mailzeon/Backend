@@ -1,14 +1,18 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
 import { requireRole }  from '../middleware/role.middleware';
+import { validate }     from '../middleware/validate.middleware';
+import { updateSettingSchema } from '../validators/settings.validator';
 import { User }              from '../models/User.model';
 import { Order }             from '../models/Order.model';
+import { Settings }          from '../models/Settings.model';
 import { WithdrawRequest }   from '../models/WithdrawRequest.model';
 import { Dispute }           from '../models/Dispute.model';
 import { WorkerLevelModel }  from '../models/WorkerLevel.model';
 import { withdrawalService } from '../services/withdrawal.service';
 import { disputeService }    from '../services/dispute.service';
 import { notificationService } from '../services/notification.service';
+import { invalidateSettingsCache } from '../services/order.service';
 import { emitToUser, EVENTS }  from '../socket/events';
 import { sendSuccess, sendError } from '../utils/response';
 import { Request, Response }  from 'express';
@@ -61,8 +65,6 @@ router.get('/stats', async (_req: Request, res: Response) => {
 });
 
 // ── Weekly Analytics ──────────────────────────────────────────────────────────
-// FIX: Was 14 DB queries (a 7-iteration loop × 2 queries per day).
-// Now just 2 aggregation pipelines total, grouped by date server-side.
 router.get('/analytics', async (_req: Request, res: Response) => {
   const sevenDaysAgo = new Date();
   sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
@@ -71,7 +73,6 @@ router.get('/analytics', async (_req: Request, res: Response) => {
   const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
   const [revenueAgg, ordersAgg] = await Promise.all([
-    // Revenue grouped by day (completed orders only)
     Order.aggregate([
       { $match: { status: 'completed', completedAt: { $gte: sevenDaysAgo } } },
       {
@@ -81,7 +82,6 @@ router.get('/analytics', async (_req: Request, res: Response) => {
         },
       },
     ]),
-    // Order count grouped by day (all orders created)
     Order.aggregate([
       { $match: { createdAt: { $gte: sevenDaysAgo } } },
       {
@@ -93,14 +93,12 @@ router.get('/analytics', async (_req: Request, res: Response) => {
     ]),
   ]);
 
-  // Build lookup maps: { '2026-06-19': 450, ... }
   const revenueMap: Record<string, number> = {};
   revenueAgg.forEach(r => { revenueMap[r._id] = r.revenue; });
 
   const ordersMap: Record<string, number> = {};
   ordersAgg.forEach(o => { ordersMap[o._id] = o.orders; });
 
-  // Build the final 7-day response array in chronological order
   const days = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date();
@@ -115,6 +113,38 @@ router.get('/analytics', async (_req: Request, res: Response) => {
   }
 
   sendSuccess(res, 'Analytics fetched.', days);
+});
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+// Lists and updates the platform-wide settings (order price, worker earning,
+// credential timer, auto-complete window). order.service.ts caches these
+// values for 5 minutes to avoid a DB hit on every order action — updating
+// here immediately clears that cache so the new value takes effect at once.
+router.get('/settings', async (_req: Request, res: Response) => {
+  const settings = await Settings.find().sort({ key: 1 });
+  sendSuccess(res, 'Settings fetched.', settings);
+});
+
+router.put('/settings/:key', validate(updateSettingSchema), async (req: Request, res: Response) => {
+  const { key }   = req.params;
+  const { value } = req.body;
+
+  if (isNaN(Number(value)) || Number(value) <= 0) {
+    sendError(res, 'Value must be a positive number.', 400);
+    return;
+  }
+
+  const setting = await Settings.findOneAndUpdate(
+    { key },
+    { value },
+    { new: true }
+  );
+
+  if (!setting) { sendError(res, 'Setting not found.', 404); return; }
+
+  invalidateSettingsCache();
+
+  sendSuccess(res, 'Setting updated successfully.', setting);
 });
 
 // ── All orders ────────────────────────────────────────────────────────────────
