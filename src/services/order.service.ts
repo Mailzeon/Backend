@@ -14,7 +14,6 @@ const throwErr = (msg: string, code = 400): never => {
 };
 
 // ─── Settings cache (5-minute TTL) ───────────────────────────────────────────
-// Settings rarely change. Caching avoids a DB round-trip on every order action.
 const settingsCache: Record<string, { value: string; expiresAt: number }> = {};
 const SETTINGS_TTL = 5 * 60 * 1000; // 5 minutes
 
@@ -53,6 +52,21 @@ export const orderService = {
     });
 
     return order;
+  },
+
+  // ── Customer: cancel a pending (not yet accepted) order ───────────────────
+  // Only allowed while status is still 'pending' — once a worker accepts,
+  // the customer must use the dispute flow instead of a direct cancel.
+  async cancelOrder(orderId: string, customerId: string): Promise<IOrder> {
+    const order = await Order.findOneAndUpdate(
+      { _id: orderId, customerId, status: 'pending', workerId: null },
+      { status: 'cancelled' },
+      { new: true }
+    );
+    if (!order) {
+      throwErr('Only pending orders (not yet accepted by a worker) can be cancelled.', 400);
+    }
+    return order!;
   },
 
   // ── Marketplace: orders available for workers ─────────────────────────────
@@ -245,8 +259,6 @@ export const orderService = {
     emitToUser(workerId,   EVENTS.ORDER_COMPLETED, { orderId });
     emitToUser(customerId, EVENTS.ORDER_COMPLETED, { orderId });
 
-    // FIX: Recalculate worker level after every completion (previously only
-    // happened when a customer left a rating — most orders never got recalculated)
     workerLevelService.recalculate(workerId).catch(err =>
       console.error('[WorkerLevel] Recalculate error after confirmSuccess:', err)
     );
@@ -254,9 +266,7 @@ export const orderService = {
     return order;
   },
 
-  // ── Customer: report problem — FIX: now creates Dispute document too ──────
-  // Previously this only changed order.status to 'under_review'. No Dispute
-  // document was ever created, so the admin Disputes panel was always empty.
+  // ── Customer: report problem ──────────────────────────────────────────────
   async reportProblem(
     orderId: string,
     customerId: string,
@@ -271,11 +281,9 @@ export const orderService = {
     if (!order) throwErr('This order cannot be disputed in its current state.', 400);
     if (!order.workerId) throwErr('No worker assigned to this order.', 400);
 
-    // 1. Set order to under_review
     order.status = 'under_review';
     await order.save();
 
-    // 2. Create the Dispute document
     const existing = await Dispute.findOne({ orderId: order._id });
     if (!existing) {
       await Dispute.create({
@@ -286,7 +294,6 @@ export const orderService = {
         description,
       });
 
-      // Notify all admins
       const admins = await User.find({ role: 'admin' }).select('_id');
       if (admins.length > 0) {
         await Notification.insertMany(admins.map(a => ({
