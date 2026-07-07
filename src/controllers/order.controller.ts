@@ -3,13 +3,14 @@ import { orderService } from '../services/order.service';
 import { sendSuccess, sendError } from '../utils/response';
 
 export const createOrder = async (req: Request, res: Response) => {
-  const { serviceName } = req.body;
-  if (!serviceName?.trim()) { sendError(res, 'Service name is required.', 400); return; }
-  const order = await orderService.createOrder(req.user!._id.toString(), serviceName);
+  // Shape already guaranteed by validate(createOrderSchema) middleware.
+  const { serviceName, domain, emailType, customLocalPart } = req.body;
+  const order = await orderService.createOrder(
+    req.user!._id.toString(), serviceName, domain, emailType, customLocalPart
+  );
   sendSuccess(res, 'Order created successfully.', order, 201);
 };
 
-// New: customer cancels an order that is still pending (no worker assigned yet).
 export const cancelOrder = async (req: Request, res: Response) => {
   const order = await orderService.cancelOrder(req.params.id, req.user!._id.toString());
   sendSuccess(res, 'Order cancelled successfully.', order);
