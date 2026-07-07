@@ -33,10 +33,6 @@ export const invalidateSettingsCache = (): void => {
   Object.keys(settingsCache).forEach(k => delete settingsCache[k]);
 };
 
-// FIX: New export — lets any logged-in user (customer/worker, even the public
-// register page) read the CURRENT order price and worker earning values.
-// This is what powers the dynamic ₹ amounts on the frontend instead of the
-// old hardcoded ₹50 / ₹20 text that no longer matched admin-configured prices.
 export const getPublicSettings = async (): Promise<{ orderPrice: number; workerEarning: number }> => {
   const [orderPrice, workerEarning] = await Promise.all([
     getSetting('orderPrice', '50'),
@@ -45,22 +41,53 @@ export const getPublicSettings = async (): Promise<{ orderPrice: number; workerE
   return { orderPrice: parseInt(orderPrice), workerEarning: parseInt(workerEarning) };
 };
 
+// NEW: generates a random-looking local-part for auto-generated email requests.
+// e.g. "user7f2k9x1a" — no need for anything fancier, just needs to be unique-ish.
+const generateRandomLocalPart = (): string => {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let result = 'user';
+  for (let i = 0; i < 8; i++) {
+    result += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return result;
+};
+
 export const orderService = {
   // ── Customer: create order ────────────────────────────────────────────────
-  async createOrder(customerId: string, serviceName: string): Promise<IOrder> {
+  // NEW: now also requires the customer to specify what email address they
+  // want created for this service — either auto-generated at random on the
+  // chosen domain, or a customer-supplied custom local-part on that domain.
+  async createOrder(
+    customerId: string,
+    serviceName: string,
+    domain: string,
+    emailType: 'random' | 'custom',
+    customLocalPart?: string
+  ): Promise<IOrder> {
     const amount        = parseInt(await getSetting('orderPrice',    '50'));
     const workerEarning = parseInt(await getSetting('workerEarning', '20'));
 
+    const localPart = emailType === 'random'
+      ? generateRandomLocalPart()
+      : customLocalPart!.trim().toLowerCase();
+
+    const requestedEmail = `${localPart}@${domain}`;
+
     const order = await Order.create({
-      customerId, serviceName: serviceName.trim(), amount, workerEarning,
+      customerId,
+      serviceName: serviceName.trim(),
+      amount,
+      workerEarning,
+      requestedEmail,
     });
 
     emitToMarketplace(EVENTS.NEW_ORDER, {
-      _id:          order._id,
-      serviceName:  order.serviceName,
-      amount:       order.amount,
-      workerEarning: order.workerEarning,
-      createdAt:    order.createdAt,
+      _id:            order._id,
+      serviceName:    order.serviceName,
+      amount:         order.amount,
+      workerEarning:  order.workerEarning,
+      requestedEmail: order.requestedEmail,
+      createdAt:      order.createdAt,
     });
 
     return order;
@@ -124,6 +151,14 @@ export const orderService = {
   ): Promise<IOrder> {
     const order = await Order.findOne({ _id: orderId, workerId, status: 'accepted' });
     if (!order) throwErr('Order not found or not in accepted state.', 404);
+
+    // NEW: enforce that the worker actually created the exact email address
+    // the customer requested. The frontend locks this field to
+    // order.requestedEmail, so this is a defensive server-side guarantee —
+    // it only trips if someone bypasses the UI (e.g. a direct API call).
+    if (order.requestedEmail && credentials.email.trim().toLowerCase() !== order.requestedEmail.toLowerCase()) {
+      throwErr(`Submitted email must exactly match the requested email: ${order.requestedEmail}`, 400);
+    }
 
     clearOrderTimer(orderId);
 
