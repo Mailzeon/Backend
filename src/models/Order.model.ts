@@ -10,6 +10,12 @@ export interface IOrder extends Document {
   workerEarning: number;    // What worker earns (₹20)
   status: OrderStatus;
 
+  // NEW: the exact email address the customer wants created for this order.
+  // Either randomly generated at creation time or customer-specified (custom
+  // local-part + selected domain). Optional in the TS type only because
+  // orders created before this feature existed won't have it.
+  requestedEmail?: string;
+
   // Submitted by worker — NEVER exposed to customer directly
   credentials?: {
     email: string;
@@ -69,6 +75,14 @@ const OrderSchema = new Schema<IOrder>(
         'cancelled',
       ],
       default: 'pending',
+    },
+
+    // NEW: set once at order creation, never changes afterward.
+    requestedEmail: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      required: true,
     },
 
     // Credentials are stored but never sent to customer in API responses
