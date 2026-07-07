@@ -53,67 +53,98 @@ export const disputeService = {
       .sort({ createdAt: -1 });
   },
 
-  // FIX: Previously this only updated the Dispute document's status —
-  // the underlying Order stayed stuck on 'under_review' forever, which is
-  // exactly the bug reported (order stuck under_review days after the
-  // admin had already resolved the dispute).
+  // REWRITTEN — makes the dispute system "logically real":
   //
-  // Now, resolving OR rejecting a dispute both close out the order by
-  // marking it 'completed' and releasing the worker's pending earnings.
-  // There is currently no refund/clawback mechanism in this platform
-  // (no real payment gateway is integrated), so both outcomes end the
-  // same way on the order side — the distinction between "resolved" and
-  // "rejected" is preserved on the Dispute record itself for admin
-  // record-keeping and reflected in the notification wording sent out.
+  //   status: 'resolved'  → the dispute is upheld IN THE CUSTOMER'S FAVOR.
+  //     Something genuinely went wrong (wrong password, bad account, etc).
+  //     The order is CANCELLED. The worker's pending earnings for this
+  //     order are REVERSED — they do not get paid. This also naturally
+  //     lowers the worker's success rate (workerLevelService counts
+  //     'cancelled' orders in the denominator but not the numerator).
+  //
+  //   status: 'rejected'  → the customer's claim is NOT upheld — the
+  //     worker did their job correctly. The order COMPLETES normally and
+  //     the worker's pending earnings are RELEASED as usual.
+  //
+  // Previously both actions did nothing to the order at all — it stayed
+  // stuck on 'under_review' forever regardless of which button admin
+  // clicked. That bug is fixed here, and the two outcomes now have
+  // genuinely different, correct financial consequences.
   async resolve(id: string, status: 'resolved' | 'rejected', adminNote?: string): Promise<IDispute> {
     const dispute = await Dispute.findByIdAndUpdate(
       id,
       { status, adminNote, resolvedAt: new Date() },
       { new: true }
-    ).populate('orderId', 'serviceName status workerId customerId amount workerEarning completedAt');
+    ).populate('orderId', 'serviceName status workerId customerId amount workerEarning');
 
     if (!dispute) throwErr('Dispute not found.', 404);
 
     const order = await Order.findById(dispute!.orderId);
 
-    // Only act if the order is still stuck under review — avoids double-processing
-    // if this dispute is somehow resolved more than once.
+    // Only act if the order is still genuinely stuck under review —
+    // prevents double-processing if a dispute somehow gets resolved twice.
     if (order && order.status === 'under_review' && order.workerId) {
-      order.status      = 'completed';
-      order.completedAt = new Date();
-      await order.save();
-
       const workerId   = order.workerId.toString();
       const customerId = order.customerId.toString();
+      const orderRef   = order._id.toString().slice(-6).toUpperCase();
 
-      await walletService.releaseFromPending(
-        workerId,
-        order.workerEarning,
-        order._id,
-        `Earned: Order #${order._id.toString().slice(-6).toUpperCase()} (dispute ${status})`
-      );
+      if (status === 'resolved') {
+        // Customer's dispute is valid — cancel the order, don't pay the worker.
+        order.status = 'cancelled';
+        await order.save();
 
-      const workerMsg = status === 'resolved'
-        ? `Your dispute for Order #${order._id.toString().slice(-6).toUpperCase()} was resolved. Your earnings have been released.`
-        : `The dispute for Order #${order._id.toString().slice(-6).toUpperCase()} was reviewed and rejected. Your earnings have been released.`;
+        await walletService.reversePendingEarnings(
+          workerId, order.workerEarning, order._id,
+          `Reversed: Order #${orderRef} (dispute upheld)`
+        );
 
-      const customerMsg = status === 'resolved'
-        ? 'Your dispute has been resolved by the admin. The order is now marked complete.'
-        : 'Your dispute was reviewed and rejected by the admin. The order has been marked complete.';
+        await Promise.all([
+          Notification.create({
+            userId: workerId,
+            title: 'Dispute Resolved — Order Cancelled',
+            message: `The dispute for Order #${orderRef} was resolved in the customer's favor. Your pending earnings for this order have been reversed.`,
+            type: 'dispute', orderId: order._id, isRead: false, createdAt: new Date(),
+          }),
+          Notification.create({
+            userId: customerId,
+            title: 'Dispute Resolved',
+            message: 'Your dispute was resolved in your favor. The order has been cancelled.',
+            type: 'dispute', orderId: order._id, isRead: false, createdAt: new Date(),
+          }),
+        ]);
 
-      await Promise.all([
-        Notification.create({
-          userId: workerId, title: '✅ Dispute Closed — Order Completed',
-          message: workerMsg, type: 'dispute', orderId: order._id, isRead: false, createdAt: new Date(),
-        }),
-        Notification.create({
-          userId: customerId, title: 'Dispute Update', message: customerMsg,
-          type: 'dispute', orderId: order._id, isRead: false, createdAt: new Date(),
-        }),
-      ]);
+        emitToUser(workerId,   EVENTS.ORDER_CANCELLED, { orderId: order._id });
+        emitToUser(customerId, EVENTS.ORDER_CANCELLED, { orderId: order._id });
 
-      emitToUser(workerId,   EVENTS.ORDER_COMPLETED, { orderId: order._id });
-      emitToUser(customerId, EVENTS.ORDER_COMPLETED, { orderId: order._id });
+      } else {
+        // Customer's claim rejected — worker did the job correctly, pay them.
+        order.status      = 'completed';
+        order.completedAt = new Date();
+        await order.save();
+
+        await walletService.releaseFromPending(
+          workerId, order.workerEarning, order._id,
+          `Earned: Order #${orderRef} (dispute rejected)`
+        );
+
+        await Promise.all([
+          Notification.create({
+            userId: workerId,
+            title: '✅ Dispute Rejected — Order Completed',
+            message: `The dispute for Order #${orderRef} was rejected. Your earnings have been released.`,
+            type: 'dispute', orderId: order._id, isRead: false, createdAt: new Date(),
+          }),
+          Notification.create({
+            userId: customerId,
+            title: 'Dispute Rejected',
+            message: 'Your dispute was reviewed and rejected. The order has been marked complete.',
+            type: 'dispute', orderId: order._id, isRead: false, createdAt: new Date(),
+          }),
+        ]);
+
+        emitToUser(workerId,   EVENTS.ORDER_COMPLETED, { orderId: order._id });
+        emitToUser(customerId, EVENTS.ORDER_COMPLETED, { orderId: order._id });
+      }
 
       workerLevelService.recalculate(workerId).catch(err =>
         console.error('[WorkerLevel] Recalculate error after dispute resolve:', err)
