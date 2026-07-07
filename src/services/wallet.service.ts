@@ -46,6 +46,27 @@ export const walletService = {
     );
   },
 
+  // NEW: Reverses a pending amount WITHOUT crediting it to balance/totalEarned.
+  // Used when a dispute is resolved AGAINST the worker — the order is
+  // cancelled and the worker should not be paid for it. Unlike
+  // releaseFromPending, this only removes the held pendingBalance; the
+  // money never becomes available or counted as earned.
+  async reversePendingEarnings(
+    userId: Types.ObjectId | string,
+    amount: number,
+    orderId: Types.ObjectId | string,
+    description: string
+  ) {
+    await Wallet.findOneAndUpdate(
+      { userId },
+      { $inc: { pendingBalance: -amount } }
+    );
+    await Transaction.findOneAndUpdate(
+      { userId, orderId, status: 'pending', type: 'credit' },
+      { status: 'failed', description }
+    );
+  },
+
   /** Debit from available balance (for withdrawals) */
   async debit(userId: Types.ObjectId | string, amount: number, description: string) {
     const wallet = await Wallet.findOneAndUpdate(
