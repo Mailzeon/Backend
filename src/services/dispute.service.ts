@@ -53,23 +53,11 @@ export const disputeService = {
       .sort({ createdAt: -1 });
   },
 
-  // REWRITTEN — makes the dispute system "logically real":
-  //
-  //   status: 'resolved'  → the dispute is upheld IN THE CUSTOMER'S FAVOR.
-  //     Something genuinely went wrong (wrong password, bad account, etc).
-  //     The order is CANCELLED. The worker's pending earnings for this
-  //     order are REVERSED — they do not get paid. This also naturally
-  //     lowers the worker's success rate (workerLevelService counts
-  //     'cancelled' orders in the denominator but not the numerator).
-  //
-  //   status: 'rejected'  → the customer's claim is NOT upheld — the
-  //     worker did their job correctly. The order COMPLETES normally and
-  //     the worker's pending earnings are RELEASED as usual.
-  //
-  // Previously both actions did nothing to the order at all — it stayed
-  // stuck on 'under_review' forever regardless of which button admin
-  // clicked. That bug is fixed here, and the two outcomes now have
-  // genuinely different, correct financial consequences.
+  // status: 'resolved'  → dispute upheld IN THE CUSTOMER'S FAVOR. Order is
+  //   CANCELLED, worker's pending earnings REVERSED (not paid), and the
+  //   customer becomes eligible to request a refund of what they paid.
+  // status: 'rejected'  → customer's claim NOT upheld. Order COMPLETES
+  //   normally, worker's pending earnings RELEASED as usual.
   async resolve(id: string, status: 'resolved' | 'rejected', adminNote?: string): Promise<IDispute> {
     const dispute = await Dispute.findByIdAndUpdate(
       id,
@@ -81,15 +69,12 @@ export const disputeService = {
 
     const order = await Order.findById(dispute!.orderId);
 
-    // Only act if the order is still genuinely stuck under review —
-    // prevents double-processing if a dispute somehow gets resolved twice.
     if (order && order.status === 'under_review' && order.workerId) {
       const workerId   = order.workerId.toString();
       const customerId = order.customerId.toString();
       const orderRef   = order._id.toString().slice(-6).toUpperCase();
 
       if (status === 'resolved') {
-        // Customer's dispute is valid — cancel the order, don't pay the worker.
         order.status = 'cancelled';
         await order.save();
 
@@ -108,7 +93,8 @@ export const disputeService = {
           Notification.create({
             userId: customerId,
             title: 'Dispute Resolved',
-            message: 'Your dispute was resolved in your favor. The order has been cancelled.',
+            // NEW: mentions the refund option now available on the order page.
+            message: `Your dispute was resolved in your favor and the order (₹${order.amount}) has been cancelled. You can now request a refund from the order page.`,
             type: 'dispute', orderId: order._id, isRead: false, createdAt: new Date(),
           }),
         ]);
@@ -117,7 +103,6 @@ export const disputeService = {
         emitToUser(customerId, EVENTS.ORDER_CANCELLED, { orderId: order._id });
 
       } else {
-        // Customer's claim rejected — worker did the job correctly, pay them.
         order.status      = 'completed';
         order.completedAt = new Date();
         await order.save();
