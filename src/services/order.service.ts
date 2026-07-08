@@ -381,7 +381,9 @@ export const orderService = {
         }
       }
 
-      return { ...safe, refundEligible, refundStatus } as IOrder;
+      // Cast through `unknown` first — this plain object doesn't carry
+      // Mongoose Document's internal methods, so TS blocks a direct cast.
+      return { ...safe, refundEligible, refundStatus } as unknown as IOrder;
     }
 
     return order!;
