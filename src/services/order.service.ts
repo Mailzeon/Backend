@@ -1,5 +1,6 @@
 import { Order, IOrder }        from '../models/Order.model';
 import { Dispute }              from '../models/Dispute.model';
+import { RefundRequest }        from '../models/RefundRequest.model';
 import { Notification }        from '../models/Notification.model';
 import { User }                 from '../models/User.model';
 import { Settings }             from '../models/Settings.model';
@@ -28,7 +29,6 @@ const getSetting = async (key: string, fallback: string): Promise<string> => {
   return value;
 };
 
-/** Call this when admin changes a setting so the cache refreshes immediately. */
 export const invalidateSettingsCache = (): void => {
   Object.keys(settingsCache).forEach(k => delete settingsCache[k]);
 };
@@ -41,8 +41,6 @@ export const getPublicSettings = async (): Promise<{ orderPrice: number; workerE
   return { orderPrice: parseInt(orderPrice), workerEarning: parseInt(workerEarning) };
 };
 
-// NEW: generates a random-looking local-part for auto-generated email requests.
-// e.g. "user7f2k9x1a" — no need for anything fancier, just needs to be unique-ish.
 const generateRandomLocalPart = (): string => {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
   let result = 'user';
@@ -54,9 +52,6 @@ const generateRandomLocalPart = (): string => {
 
 export const orderService = {
   // ── Customer: create order ────────────────────────────────────────────────
-  // NEW: now also requires the customer to specify what email address they
-  // want created for this service — either auto-generated at random on the
-  // chosen domain, or a customer-supplied custom local-part on that domain.
   async createOrder(
     customerId: string,
     serviceName: string,
@@ -152,10 +147,6 @@ export const orderService = {
     const order = await Order.findOne({ _id: orderId, workerId, status: 'accepted' });
     if (!order) throwErr('Order not found or not in accepted state.', 404);
 
-    // NEW: enforce that the worker actually created the exact email address
-    // the customer requested. The frontend locks this field to
-    // order.requestedEmail, so this is a defensive server-side guarantee —
-    // it only trips if someone bypasses the UI (e.g. a direct API call).
     if (order.requestedEmail && credentials.email.trim().toLowerCase() !== order.requestedEmail.toLowerCase()) {
       throwErr(`Submitted email must exactly match the requested email: ${order.requestedEmail}`, 400);
     }
@@ -183,7 +174,7 @@ export const orderService = {
     await notificationService.create({
       userId:  customerId,
       title:   '✅ Credentials Ready!',
-      message: 'The worker has submitted credentials for your order. Open your order to proceed.',
+      message: 'The worker has submitted your account details. Open your order to view the password.',
       type:    'order',
       orderId: order!._id,
     });
@@ -368,9 +359,29 @@ export const orderService = {
     if (!isCustomer && !isWorker && !isAdmin) throwErr('Access denied.', 403);
 
     if (role === 'customer') {
+      // FIX (Issue 1): previously `credentials` was always deleted before
+      // returning to the customer. That was wrong — the entire point of
+      // this platform is the customer receives an account; they legitimately
+      // need to see the password the worker set. We now keep `credentials`
+      // intact for the customer once it exists (only set once the worker
+      // has actually submitted it, so there's nothing to leak before then).
       const safe = order!.toObject();
-      delete safe.credentials;
-      return safe as IOrder;
+
+      // NEW: compute refund eligibility/status for cancelled orders so the
+      // frontend can show the right UI without extra round-trips.
+      let refundEligible = false;
+      let refundStatus: string | null = null;
+
+      if (safe.status === 'cancelled') {
+        const dispute = await Dispute.findOne({ orderId: order!._id, status: 'resolved' });
+        if (dispute) {
+          const existingRefund = await RefundRequest.findOne({ orderId: order!._id });
+          refundStatus   = existingRefund ? existingRefund.status : null;
+          refundEligible = !existingRefund;
+        }
+      }
+
+      return { ...safe, refundEligible, refundStatus } as IOrder;
     }
 
     return order!;
