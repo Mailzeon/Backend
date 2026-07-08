@@ -7,9 +7,11 @@ import { User }              from '../models/User.model';
 import { Order }             from '../models/Order.model';
 import { Settings }          from '../models/Settings.model';
 import { WithdrawRequest }   from '../models/WithdrawRequest.model';
+import { RefundRequest }     from '../models/RefundRequest.model';
 import { Dispute }           from '../models/Dispute.model';
 import { WorkerLevelModel }  from '../models/WorkerLevel.model';
 import { withdrawalService } from '../services/withdrawal.service';
+import { refundService }     from '../services/refund.service';
 import { disputeService }    from '../services/dispute.service';
 import { notificationService } from '../services/notification.service';
 import { invalidateSettingsCache } from '../services/order.service';
@@ -28,7 +30,7 @@ router.get('/stats', async (_req: Request, res: Response) => {
   const [
     totalCustomers, totalWorkers, onlineWorkers,
     pendingOrders,  completedOrders, totalOrders,
-    pendingWithdrawals, openDisputes, todayOrders,
+    pendingWithdrawals, pendingRefunds, openDisputes, todayOrders,
   ] = await Promise.all([
     User.countDocuments({ role: 'customer' }),
     User.countDocuments({ role: 'worker' }),
@@ -37,6 +39,7 @@ router.get('/stats', async (_req: Request, res: Response) => {
     Order.countDocuments({ status: 'completed' }),
     Order.countDocuments(),
     WithdrawRequest.countDocuments({ status: 'pending' }),
+    RefundRequest.countDocuments({ status: 'pending' }), // NEW
     Dispute.countDocuments({ status: 'open' }),
     Order.countDocuments({ createdAt: { $gte: today } }),
   ]);
@@ -58,7 +61,7 @@ router.get('/stats', async (_req: Request, res: Response) => {
   sendSuccess(res, 'Stats fetched.', {
     totalCustomers, totalWorkers, onlineWorkers,
     pendingOrders,  completedOrders, totalOrders, todayOrders,
-    pendingWithdrawals, openDisputes,
+    pendingWithdrawals, pendingRefunds, openDisputes,
     totalRevenue: revenue.total,
     todayRevenue: revenue.today,
   });
@@ -116,10 +119,6 @@ router.get('/analytics', async (_req: Request, res: Response) => {
 });
 
 // ── Settings ──────────────────────────────────────────────────────────────────
-// Lists and updates the platform-wide settings (order price, worker earning,
-// credential timer, auto-complete window). order.service.ts caches these
-// values for 5 minutes to avoid a DB hit on every order action — updating
-// here immediately clears that cache so the new value takes effect at once.
 router.get('/settings', async (_req: Request, res: Response) => {
   const settings = await Settings.find().sort({ key: 1 });
   sendSuccess(res, 'Settings fetched.', settings);
@@ -215,6 +214,21 @@ router.patch('/withdrawals/:id', async (req: Request, res: Response) => {
   }
   const wr = await withdrawalService.updateStatus(req.params.id, status, adminNote);
   sendSuccess(res, 'Withdrawal updated.', wr);
+});
+
+// ── Refunds (NEW) ──────────────────────────────────────────────────────────────
+router.get('/refunds', async (_req: Request, res: Response) => {
+  const refunds = await refundService.getAllRefunds();
+  sendSuccess(res, 'Refund requests fetched.', refunds);
+});
+
+router.patch('/refunds/:id', async (req: Request, res: Response) => {
+  const { status, adminNote } = req.body;
+  if (!['completed', 'rejected'].includes(status)) {
+    sendError(res, 'Invalid status.', 400); return;
+  }
+  const refund = await refundService.updateStatus(req.params.id, status, adminNote);
+  sendSuccess(res, 'Refund updated.', refund);
 });
 
 // ── Disputes ──────────────────────────────────────────────────────────────────
