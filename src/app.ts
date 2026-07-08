@@ -17,6 +17,7 @@ import ratingRoutes       from './routes/rating.routes';
 import disputeRoutes      from './routes/dispute.routes';
 import adminRoutes        from './routes/admin.routes';
 import settingsRoutes     from './routes/settings.routes';
+import refundRoutes       from './routes/refund.routes';
 
 export const app = express();
 
@@ -68,6 +69,7 @@ app.use('/api/ratings',       ratingRoutes);
 app.use('/api/disputes',      disputeRoutes);
 app.use('/api/admin',         adminRoutes);
 app.use('/api/settings',      settingsRoutes);
+app.use('/api/refunds',       refundRoutes);
 
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => {
