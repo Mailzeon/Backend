@@ -18,6 +18,7 @@ import disputeRoutes      from './routes/dispute.routes';
 import adminRoutes        from './routes/admin.routes';
 import settingsRoutes     from './routes/settings.routes';
 import refundRoutes       from './routes/refund.routes';
+import leaderboardRoutes  from './routes/leaderboard.routes';
 
 export const app = express();
 
@@ -70,6 +71,7 @@ app.use('/api/disputes',      disputeRoutes);
 app.use('/api/admin',         adminRoutes);
 app.use('/api/settings',      settingsRoutes);
 app.use('/api/refunds',       refundRoutes);
+app.use('/api/leaderboard',   leaderboardRoutes);
 
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => {
