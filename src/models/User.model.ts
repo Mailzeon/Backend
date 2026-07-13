@@ -30,6 +30,15 @@ const UserSchema = new Schema<IUser>(
       required: true,
     },
 
+    // NEW: required by Cashfree's Payment Gateway API (customer_details.customer_phone
+    // is mandatory on every order create call). Not required at the schema level
+    // since existing users won't have it yet — it's collected the first time a
+    // customer creates an order and saved to their profile from then on.
+    phone: {
+      type: String,
+      trim: true,
+    },
+
     // ── Worker-specific ────────────────────────────────────────────────────
     isOnline: {
       type: Boolean,
