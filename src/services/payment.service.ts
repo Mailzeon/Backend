@@ -14,6 +14,22 @@ interface CreateCashfreeOrderResult {
   cashfreeOrderId: string;
 }
 
+// FIX: Node's built-in `fetch` types `.json()` as `Promise<unknown>` (no DOM
+// lib in this project's tsconfig), so TypeScript blocks property access on
+// the result. These interfaces describe just the fields we actually read
+// from Cashfree's responses, and every `.json()` call below is cast to one
+// of them instead of leaving it as `unknown`.
+interface CashfreeCreateOrderResponse {
+  payment_session_id?: string;
+  order_id?: string;
+  message?: string;
+}
+
+interface CashfreeGetOrderResponse {
+  order_status?: string;
+  message?: string;
+}
+
 export const paymentService = {
   // ── Create the corresponding order on Cashfree ────────────────────────────
   // Called right after our own Order document is created (status:
@@ -49,7 +65,7 @@ export const paymentService = {
       }),
     });
 
-    const data = await res.json();
+    const data = (await res.json()) as CashfreeCreateOrderResponse;
 
     if (!res.ok) {
       console.error('[Cashfree] Create order failed:', JSON.stringify(data));
@@ -63,7 +79,7 @@ export const paymentService = {
 
     return {
       paymentSessionId: data.payment_session_id,
-      cashfreeOrderId: data.order_id,
+      cashfreeOrderId: data.order_id ?? orderId,
     };
   },
 
@@ -92,14 +108,14 @@ export const paymentService = {
       method: 'GET',
       headers: cashfreeHeaders(),
     });
-    const data = await res.json();
+    const data = (await res.json()) as CashfreeGetOrderResponse;
 
     if (!res.ok) {
       console.error('[Cashfree] Get order status failed:', JSON.stringify(data));
       throwErr('Could not verify payment status right now. Please try again shortly.', 502);
     }
 
-    return data.order_status; // 'ACTIVE' | 'PAID' | 'EXPIRED' | 'TERMINATED'
+    return data.order_status ?? 'ACTIVE'; // 'ACTIVE' | 'PAID' | 'EXPIRED' | 'TERMINATED'
   },
 
   // ── Idempotent success transition ─────────────────────────────────────────
