@@ -2,13 +2,26 @@ import { Request, Response } from 'express';
 import { orderService } from '../services/order.service';
 import { sendSuccess, sendError } from '../utils/response';
 
+// REWORKED for Cashfree: now accepts a customer-set `amount` and optional
+// `phone`, and returns `paymentSessionId` (needed by the frontend to open
+// Cashfree's hosted checkout) alongside the created order.
 export const createOrder = async (req: Request, res: Response) => {
-  // Shape already guaranteed by validate(createOrderSchema) middleware.
-  const { serviceName, domain, emailType, customLocalPart } = req.body;
-  const order = await orderService.createOrder(
-    req.user!._id.toString(), serviceName, domain, emailType, customLocalPart
+  const { serviceName, domain, emailType, customLocalPart, amount, phone } = req.body;
+
+  const result = await orderService.createOrder(
+    req.user!._id.toString(),
+    serviceName,
+    domain,
+    emailType,
+    amount,
+    phone,
+    customLocalPart
   );
-  sendSuccess(res, 'Order created successfully.', order, 201);
+
+  sendSuccess(res, 'Order created. Complete payment to publish it to the marketplace.', {
+    order: result.order,
+    paymentSessionId: result.paymentSessionId,
+  }, 201);
 };
 
 export const cancelOrder = async (req: Request, res: Response) => {
