@@ -7,6 +7,7 @@ import { Settings }             from '../models/Settings.model';
 import { walletService }        from './wallet.service';
 import { notificationService }  from './notification.service';
 import { workerLevelService }   from './workerLevel.service';
+import { paymentService }       from './payment.service';
 import { startOrderTimer, clearOrderTimer } from '../utils/orderTimer';
 import { emitToUser, emitToMarketplace, EVENTS } from '../socket/events';
 
@@ -33,12 +34,19 @@ export const invalidateSettingsCache = (): void => {
   Object.keys(settingsCache).forEach(k => delete settingsCache[k]);
 };
 
-export const getPublicSettings = async (): Promise<{ orderPrice: number; workerEarning: number }> => {
-  const [orderPrice, workerEarning] = await Promise.all([
-    getSetting('orderPrice', '50'),
-    getSetting('workerEarning', '20'),
+// FIX: 'orderPrice'/'workerEarning' are gone — customer now sets their own
+// amount. This is kept only for any leftover frontend calls; it now reports
+// the *minimum* amount and current commission-implied worker share for a
+// hypothetical minimum order, purely informational.
+export const getPublicSettings = async (): Promise<{ minimumOrderAmount: number; platformCommissionRate: number }> => {
+  const [minimumOrderAmount, platformCommissionRate] = await Promise.all([
+    getSetting('minimumOrderAmount', '15'),
+    getSetting('platformCommissionRate', '15'),
   ]);
-  return { orderPrice: parseInt(orderPrice), workerEarning: parseInt(workerEarning) };
+  return {
+    minimumOrderAmount: parseInt(minimumOrderAmount),
+    platformCommissionRate: parseInt(platformCommissionRate),
+  };
 };
 
 const generateRandomLocalPart = (): string => {
@@ -52,40 +60,92 @@ const generateRandomLocalPart = (): string => {
 
 export const orderService = {
   // ── Customer: create order ────────────────────────────────────────────────
+  // REWORKED for Cashfree integration:
+  //   1. Customer now sets their own `amount` (validated against the live
+  //      minimumOrderAmount setting — Zod only enforces the absolute ₹15 floor).
+  //   2. Commission (15%) is computed and LOCKED at creation time — later
+  //      changes to platformCommissionRate never retroactively affect
+  //      already-created orders.
+  //   3. Phone number is required by Cashfree — reused from the customer's
+  //      profile if already saved, otherwise the provided value is saved
+  //      to their profile for next time.
+  //   4. The order starts as 'payment_pending' — NOT visible in the
+  //      marketplace — and a corresponding Cashfree order is created.
+  //      It only becomes 'pending' (marketplace-visible) once
+  //      paymentService confirms the payment succeeded (webhook or verify).
   async createOrder(
     customerId: string,
     serviceName: string,
     domain: string,
     emailType: 'random' | 'custom',
+    amount: number,
+    phone: string | undefined,
     customLocalPart?: string
-  ): Promise<IOrder> {
-    const amount        = parseInt(await getSetting('orderPrice',    '50'));
-    const workerEarning = parseInt(await getSetting('workerEarning', '20'));
+  ): Promise<{ order: IOrder; paymentSessionId: string }> {
+    const minAmount = parseInt(await getSetting('minimumOrderAmount', '15'));
+    if (amount < minAmount) {
+      throwErr(`Minimum order amount is ₹${minAmount}.`, 400);
+    }
+
+    const commissionPercent = parseInt(await getSetting('platformCommissionRate', '15'));
+    const commissionRate    = commissionPercent / 100;
+
+    // Round to 2 decimals to avoid floating-point cents (e.g. 33.333333...)
+    const platformCommission = Math.round(amount * commissionRate * 100) / 100;
+    const workerEarning      = Math.round((amount - platformCommission) * 100) / 100;
 
     const localPart = emailType === 'random'
       ? generateRandomLocalPart()
       : customLocalPart!.trim().toLowerCase();
-
     const requestedEmail = `${localPart}@${domain}`;
+
+    const customer = await User.findById(customerId);
+    if (!customer) throwErr('Customer not found.', 404);
+
+    // Reuse saved phone, or save the newly provided one for next time.
+    let finalPhone = customer!.phone;
+    if (!finalPhone) {
+      if (!phone) {
+        throwErr('A phone number is required to process payment. Please provide one.', 400);
+      }
+      customer!.phone = phone;
+      await customer!.save();
+      finalPhone = phone;
+    }
 
     const order = await Order.create({
       customerId,
       serviceName: serviceName.trim(),
       amount,
       workerEarning,
+      platformCommission,
+      commissionRate,
       requestedEmail,
+      status: 'payment_pending',
+      paymentStatus: 'pending',
     });
 
-    emitToMarketplace(EVENTS.NEW_ORDER, {
-      _id:            order._id,
-      serviceName:    order.serviceName,
-      amount:         order.amount,
-      workerEarning:  order.workerEarning,
-      requestedEmail: order.requestedEmail,
-      createdAt:      order.createdAt,
-    });
+    try {
+      const { paymentSessionId, cashfreeOrderId } = await paymentService.createCashfreeOrder(
+        order._id.toString(),
+        amount,
+        customerId,
+        customer!.email,
+        finalPhone
+      );
 
-    return order;
+      order.cashfreeOrderId = cashfreeOrderId;
+      await order.save();
+
+      return { order, paymentSessionId };
+    } catch (err) {
+      // Cashfree order creation failed — don't leave our order stuck in
+      // limbo forever; mark it failed so the customer can simply try again.
+      order.status = 'payment_failed';
+      order.paymentStatus = 'failed';
+      await order.save();
+      throw err;
+    }
   },
 
   // ── Customer: cancel a pending (not yet accepted) order ───────────────────
@@ -102,11 +162,15 @@ export const orderService = {
   },
 
   // ── Marketplace: orders available for workers ─────────────────────────────
+  // FIX: also hides the customer's full `amount`/commission breakdown here —
+  // this is the list workers browse BEFORE accepting, so the leak applied
+  // even earlier than getOrder()/getWorkerOrders() below.
   async getMarketplaceOrders(): Promise<IOrder[]> {
-    return Order.find({ status: 'pending', workerId: null })
+    const orders = await Order.find({ status: 'pending', workerId: null })
       .sort({ createdAt: -1 })
-      .select('-credentials')
-      .lean() as Promise<IOrder[]>;
+      .select('-credentials -amount -platformCommission -commissionRate')
+      .lean();
+    return orders as unknown as IOrder[];
   },
 
   // ── Worker: atomically accept an order ───────────────────────────────────
@@ -359,16 +423,8 @@ export const orderService = {
     if (!isCustomer && !isWorker && !isAdmin) throwErr('Access denied.', 403);
 
     if (role === 'customer') {
-      // FIX (Issue 1): previously `credentials` was always deleted before
-      // returning to the customer. That was wrong — the entire point of
-      // this platform is the customer receives an account; they legitimately
-      // need to see the password the worker set. We now keep `credentials`
-      // intact for the customer once it exists (only set once the worker
-      // has actually submitted it, so there's nothing to leak before then).
       const safe = order!.toObject();
 
-      // NEW: compute refund eligibility/status for cancelled orders so the
-      // frontend can show the right UI without extra round-trips.
       let refundEligible = false;
       let refundStatus: string | null = null;
 
@@ -381,9 +437,18 @@ export const orderService = {
         }
       }
 
-      // Cast through `unknown` first — this plain object doesn't carry
-      // Mongoose Document's internal methods, so TS blocks a direct cast.
       return { ...safe, refundEligible, refundStatus } as unknown as IOrder;
+    }
+
+    // WORKER-FACING: strip the customer's full paid amount and commission
+    // breakdown — a worker must only ever see `workerEarning` (their 85%
+    // share), never the customer's full payment or platform's cut.
+    if (role === 'worker') {
+      const safe = order!.toObject();
+      delete (safe as any).amount;
+      delete (safe as any).platformCommission;
+      delete (safe as any).commissionRate;
+      return safe as unknown as IOrder;
     }
 
     return order!;
@@ -396,9 +461,12 @@ export const orderService = {
       .lean() as Promise<IOrder[]>;
   },
 
+  // WORKER-FACING list — same amount-hiding rule as getOrder() above.
   async getWorkerOrders(workerId: string): Promise<IOrder[]> {
-    return Order.find({ workerId })
+    const orders = await Order.find({ workerId })
       .sort({ createdAt: -1 })
-      .lean() as Promise<IOrder[]>;
+      .select('-amount -platformCommission -commissionRate')
+      .lean();
+    return orders as unknown as IOrder[];
   },
 };
