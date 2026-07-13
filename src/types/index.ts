@@ -6,6 +6,8 @@ export type UserRole     = 'customer' | 'worker' | 'admin';
 export type WorkerLevel  = 'bronze' | 'silver' | 'gold';
 
 export type OrderStatus =
+  | 'payment_pending'   // NEW: order created, awaiting Cashfree payment confirmation
+  | 'payment_failed'    // NEW: payment did not succeed — terminal state
   | 'pending'
   | 'accepted'
   | 'credentials_submitted'
@@ -30,6 +32,9 @@ export interface IUser extends Document {
   email: string;
   password: string;
   role: UserRole;
+  // NEW: required by Cashfree at order-creation time; optional here since
+  // existing users won't have it until they place their first order.
+  phone?: string;
   isOnline: boolean;
   isApproved: boolean;           // Workers need admin approval before accepting orders
   level: WorkerLevel;
