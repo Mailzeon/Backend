@@ -25,4 +25,17 @@ export const env = {
   CLOUDINARY_API_SECRET: optional('CLOUDINARY_API_SECRET'),
 
   FRONTEND_URL: optional('FRONTEND_URL', 'http://localhost:3000'),
+
+  // NEW — Cashfree Payment Gateway (production keys).
+  // Required now since payment collection is a core, always-on feature —
+  // the server intentionally refuses to start without these configured,
+  // the same way it refuses to start without MONGODB_URI/JWT_SECRET.
+  CASHFREE_APP_ID:     required('CASHFREE_APP_ID'),
+  CASHFREE_SECRET_KEY: required('CASHFREE_SECRET_KEY'),
+
+  // NEW — our own backend's public URL, used to build the Cashfree
+  // `notify_url` (webhook target). Render provides RENDER_EXTERNAL_URL
+  // automatically, so this normally needs no manual configuration at all;
+  // BACKEND_URL is only a manual override/fallback for other hosts.
+  BACKEND_URL: optional('BACKEND_URL', optional('RENDER_EXTERNAL_URL', 'http://localhost:5000')),
 } as const;
