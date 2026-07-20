@@ -39,11 +39,15 @@ router.get('/stats', async (_req: Request, res: Response) => {
     Order.countDocuments({ status: 'completed' }),
     Order.countDocuments(),
     WithdrawRequest.countDocuments({ status: 'pending' }),
-    RefundRequest.countDocuments({ status: 'pending' }), // NEW
+    RefundRequest.countDocuments({ status: 'pending' }),
     Dispute.countDocuments({ status: 'open' }),
     Order.countDocuments({ createdAt: { $gte: today } }),
   ]);
 
+  // NEW: platformCommission is now tracked per-order (locked-in at creation).
+  // This aggregation reports both gross revenue collected from customers
+  // AND the platform's actual net commission earned — two different,
+  // both-useful numbers now that pricing is customer-set rather than fixed.
   const revenueAgg = await Order.aggregate([
     { $match: { status: 'completed' } },
     {
@@ -53,17 +57,23 @@ router.get('/stats', async (_req: Request, res: Response) => {
         today: {
           $sum: { $cond: [{ $gte: ['$completedAt', today] }, '$amount', 0] },
         },
+        commissionTotal: { $sum: '$platformCommission' },
+        commissionToday: {
+          $sum: { $cond: [{ $gte: ['$completedAt', today] }, '$platformCommission', 0] },
+        },
       },
     },
   ]);
-  const revenue = revenueAgg[0] ?? { total: 0, today: 0 };
+  const revenue = revenueAgg[0] ?? { total: 0, today: 0, commissionTotal: 0, commissionToday: 0 };
 
   sendSuccess(res, 'Stats fetched.', {
     totalCustomers, totalWorkers, onlineWorkers,
     pendingOrders,  completedOrders, totalOrders, todayOrders,
     pendingWithdrawals, pendingRefunds, openDisputes,
-    totalRevenue: revenue.total,
-    todayRevenue: revenue.today,
+    totalRevenue:    revenue.total,           // Gross — total collected from customers
+    todayRevenue:    revenue.today,
+    totalCommission: revenue.commissionTotal, // NEW: platform's actual net earnings
+    todayCommission: revenue.commissionToday, // NEW
   });
 });
 
@@ -82,6 +92,8 @@ router.get('/analytics', async (_req: Request, res: Response) => {
         $group: {
           _id:     { $dateToString: { format: '%Y-%m-%d', date: '$completedAt' } },
           revenue: { $sum: '$amount' },
+          // NEW: commission earned per day, for a separate chart series
+          commission: { $sum: '$platformCommission' },
         },
       },
     ]),
@@ -97,7 +109,8 @@ router.get('/analytics', async (_req: Request, res: Response) => {
   ]);
 
   const revenueMap: Record<string, number> = {};
-  revenueAgg.forEach(r => { revenueMap[r._id] = r.revenue; });
+  const commissionMap: Record<string, number> = {};
+  revenueAgg.forEach(r => { revenueMap[r._id] = r.revenue; commissionMap[r._id] = r.commission; });
 
   const ordersMap: Record<string, number> = {};
   ordersAgg.forEach(o => { ordersMap[o._id] = o.orders; });
@@ -109,9 +122,10 @@ router.get('/analytics', async (_req: Request, res: Response) => {
     d.setHours(0, 0, 0, 0);
     const dateStr = d.toISOString().split('T')[0];
     days.push({
-      day:     DAY_NAMES[d.getDay()],
-      revenue: revenueMap[dateStr] ?? 0,
-      orders:  ordersMap[dateStr]  ?? 0,
+      day:        DAY_NAMES[d.getDay()],
+      revenue:    revenueMap[dateStr] ?? 0,
+      commission: commissionMap[dateStr] ?? 0,
+      orders:     ordersMap[dateStr] ?? 0,
     });
   }
 
@@ -127,9 +141,17 @@ router.get('/settings', async (_req: Request, res: Response) => {
 router.put('/settings/:key', validate(updateSettingSchema), async (req: Request, res: Response) => {
   const { key }   = req.params;
   const { value } = req.body;
+  const numValue  = Number(value);
 
-  if (isNaN(Number(value)) || Number(value) <= 0) {
+  if (isNaN(numValue) || numValue <= 0) {
     sendError(res, 'Value must be a positive number.', 400);
+    return;
+  }
+
+  // NEW: platformCommissionRate is a percentage — cap it at a sane maximum
+  // so a typo (e.g. "150") can't silently break every future order's math.
+  if (key === 'platformCommissionRate' && numValue > 100) {
+    sendError(res, 'Commission rate cannot exceed 100%.', 400);
     return;
   }
 
@@ -216,7 +238,7 @@ router.patch('/withdrawals/:id', async (req: Request, res: Response) => {
   sendSuccess(res, 'Withdrawal updated.', wr);
 });
 
-// ── Refunds (NEW) ──────────────────────────────────────────────────────────────
+// ── Refunds ───────────────────────────────────────────────────────────────────
 router.get('/refunds', async (_req: Request, res: Response) => {
   const refunds = await refundService.getAllRefunds();
   sendSuccess(res, 'Refund requests fetched.', refunds);
