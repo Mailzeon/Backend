@@ -53,8 +53,11 @@ export const errorMiddleware = (
     statusCode = 400;
   }
 
-  // Log in development only
-  if (process.env.NODE_ENV === 'development') {
+  // Log 5xx (unexpected/server-side) errors always — including in production
+  // — so Render's logs actually show what went wrong. 4xx (client mistakes:
+  // bad input, not found, etc.) are noisy and expected, so those stay quiet
+  // unless NODE_ENV is development.
+  if (statusCode >= 500 || process.env.NODE_ENV === 'development') {
     console.error(`[Error] ${statusCode}:`, err.message);
     console.error(err.stack);
   }
