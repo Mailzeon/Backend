@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
 import { requireRole } from '../middleware/role.middleware';
+import { upload } from '../middleware/upload.middleware';
+import { uploadProfileImage } from '../controllers/user.controller';
 import { Request, Response } from 'express';
 import { User } from '../models/User.model';
 import { sendSuccess, sendError } from '../utils/response';
@@ -26,5 +28,9 @@ router.put('/profile', async (req: Request, res: Response) => {
   const user = await User.findByIdAndUpdate(req.user!._id, updates, { new: true });
   sendSuccess(res, 'Profile updated.', user);
 });
+
+// New: upload/replace profile picture. 'image' must match the FormData
+// field name the frontend sends (see ProfileImageUploader.tsx).
+router.post('/profile-image', upload.single('image'), uploadProfileImage);
 
 export default router;
