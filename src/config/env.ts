@@ -39,13 +39,15 @@ export const env = {
   // BACKEND_URL is only a manual override/fallback for other hosts.
   BACKEND_URL: optional('BACKEND_URL', optional('RENDER_EXTERNAL_URL', 'http://localhost:5000')),
 
-  // NEW — Gmail SMTP (via nodemailer), used only for forgot-password emails.
+  // NEW — Brevo (transactional email API), used only for forgot-password
+  // emails. Switched from Gmail SMTP because Render's free tier blocks
+  // outbound SMTP ports (25/465/587) as of Sept 2025 — Brevo sends over
+  // HTTPS (port 443), which isn't affected.
   // Optional (not `required()`) so the server doesn't refuse to start if it's
   // missing — forgotPassword() will throw a clear error at request-time
   // instead, since email isn't as core to boot-up as DB/JWT/payment config.
-  // GMAIL_APP_PASSWORD must be a 16-character Google "App Password"
-  // (Google Account → Security → 2-Step Verification → App Passwords) —
-  // NOT the actual Gmail account password.
-  GMAIL_USER:         optional('GMAIL_USER'),
-  GMAIL_APP_PASSWORD: optional('GMAIL_APP_PASSWORD'),
+  // BREVO_SENDER_EMAIL must be verified under Brevo → Senders (Single Sender
+  // Verification) — NOT a full domain, just one email address you own.
+  BREVO_API_KEY:      optional('BREVO_API_KEY'),
+  BREVO_SENDER_EMAIL: optional('BREVO_SENDER_EMAIL'),
 } as const;
