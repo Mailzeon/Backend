@@ -46,6 +46,13 @@ export const errorMiddleware = (
     statusCode = 401;
   }
 
+  // Multer: file upload errors (file too large, wrong field name, etc.)
+  // and our own fileFilter rejection in upload.middleware.ts — both are
+  // client mistakes, not server failures, so respond 400 instead of 500.
+  if (err.name === 'MulterError' || /image files/i.test(err.message)) {
+    statusCode = 400;
+  }
+
   // Log in development only
   if (process.env.NODE_ENV === 'development') {
     console.error(`[Error] ${statusCode}:`, err.message);
