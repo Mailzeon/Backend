@@ -36,3 +36,18 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
   await authService.changePassword(req.user!._id.toString(), currentPassword, newPassword);
   sendSuccess(res, 'Password changed successfully.');
 };
+
+// New: request a reset link. Always returns the same success message whether
+// or not the email exists on the platform — auth.service handles that silently.
+export const forgotPassword = async (req: Request, res: Response): Promise<void> => {
+  const { email } = req.body;
+  await authService.forgotPassword(email);
+  sendSuccess(res, 'If an account exists for that email, a reset link has been sent.');
+};
+
+// New: consumes the token from the emailed link and sets a new password.
+export const resetPassword = async (req: Request, res: Response): Promise<void> => {
+  const { token, newPassword } = req.body;
+  await authService.resetPassword(token, newPassword);
+  sendSuccess(res, 'Password reset successfully. You can now log in.');
+};
