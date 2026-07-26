@@ -9,6 +9,8 @@ import { Settings }          from '../models/Settings.model';
 import { WithdrawRequest }   from '../models/WithdrawRequest.model';
 import { RefundRequest }     from '../models/RefundRequest.model';
 import { Dispute }           from '../models/Dispute.model';
+import { Rating }            from '../models/Rating.model';
+import { Wallet }             from '../models/Wallet.model';
 import { WorkerLevelModel }  from '../models/WorkerLevel.model';
 import { withdrawalService } from '../services/withdrawal.service';
 import { refundService }     from '../services/refund.service';
@@ -221,6 +223,48 @@ router.patch('/users/:id/approve', async (req: Request, res: Response) => {
   }
 
   sendSuccess(res, `Worker ${isApproved ? 'approved' : 'suspended'}.`, user);
+});
+
+// New: per-user detail view — full history in one place instead of admin
+// having to cross-reference the Orders/Disputes pages manually.
+// Works for both workers and customers: a worker gets their earnings stats,
+// wallet, and rating history on top of shared order/dispute history; a
+// customer just gets their order/dispute history.
+router.get('/users/:id/detail', async (req: Request, res: Response) => {
+  const user = await User.findById(req.params.id);
+  if (!user) { sendError(res, 'User not found.', 404); return; }
+
+  const isWorker    = user.role === 'worker';
+  const partyFilter = isWorker ? { workerId: user._id } : { customerId: user._id };
+
+  const [orders, disputes, workerLevel, wallet, recentRatings] = await Promise.all([
+    Order.find(partyFilter)
+      .select('-credentials')
+      .populate('customerId workerId', 'name email')
+      .sort({ createdAt: -1 })
+      .limit(25),
+    Dispute.find(partyFilter)
+      .populate('orderId', 'serviceName')
+      .sort({ createdAt: -1 })
+      .limit(25),
+    isWorker ? WorkerLevelModel.findOne({ workerId: user._id }) : null,
+    isWorker ? Wallet.findOne({ userId: user._id }) : null,
+    isWorker
+      ? Rating.find({ workerId: user._id })
+          .populate('customerId', 'name')
+          .sort({ createdAt: -1 })
+          .limit(10)
+      : null,
+  ]);
+
+  sendSuccess(res, 'User detail fetched.', {
+    user,
+    orders,
+    disputes,
+    workerLevel,
+    wallet,
+    recentRatings,
+  });
 });
 
 // ── Withdrawals ───────────────────────────────────────────────────────────────
