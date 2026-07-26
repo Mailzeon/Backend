@@ -1,39 +1,20 @@
-import nodemailer from 'nodemailer';
 import { env } from '../config/env';
 
 /**
- * Gmail SMTP transporter (via nodemailer) — chosen instead of a dedicated
- * transactional email provider (Resend/SendGrid) because those require
- * verifying a domain you own before they'll deliver to arbitrary recipients.
- * Since this project runs on free-tier Vercel/Render with no custom domain,
- * Gmail SMTP is the only zero-cost option that can actually reach real
- * customer inboxes — it only needs a Gmail account + an App Password.
+ * Brevo (formerly Sendinblue) transactional email API — sends over HTTPS,
+ * not SMTP. This matters because Render's free web-service tier blocks
+ * outbound traffic to SMTP ports 25/465/587 (since Sept 2025), which is
+ * exactly why a Gmail-SMTP-via-nodemailer approach silently times out on
+ * this project's hosting. Brevo's REST API is unaffected since it's just
+ * a normal HTTPS POST request, same as any other external API call we make
+ * (e.g. Cashfree in payment.service.ts).
  *
- * Created lazily (not at import time) so the server doesn't crash on boot
- * if GMAIL_USER/GMAIL_APP_PASSWORD aren't set yet — it only throws when a
- * forgot-password request actually comes in.
+ * Brevo also only requires a single verified SENDER email (Brevo dashboard →
+ * Senders → Add a Sender), not a verified domain — which fits a zero-domain
+ * setup. Free tier: 300 emails/day, sent to any recipient once the sender
+ * email is verified.
  */
-let transporter: nodemailer.Transporter | null = null;
-
-const getTransporter = (): nodemailer.Transporter => {
-  if (transporter) return transporter;
-
-  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
-    throw new Error(
-      'Email is not configured — set GMAIL_USER and GMAIL_APP_PASSWORD in environment variables.'
-    );
-  }
-
-  transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: env.GMAIL_USER,
-      pass: env.GMAIL_APP_PASSWORD, // 16-character App Password, NOT the normal Gmail password
-    },
-  });
-
-  return transporter;
-};
+const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
 
 interface SendEmailInput {
   to: string;
@@ -42,18 +23,33 @@ interface SendEmailInput {
 }
 
 const sendEmail = async ({ to, subject, html }: SendEmailInput): Promise<void> => {
-  try {
-    await getTransporter().sendMail({
-      from: `Mailzeon <${env.GMAIL_USER}>`,
-      to,
+  if (!env.BREVO_API_KEY || !env.BREVO_SENDER_EMAIL) {
+    throw new Error(
+      'Email is not configured — set BREVO_API_KEY and BREVO_SENDER_EMAIL in environment variables.'
+    );
+  }
+
+  const res = await fetch(BREVO_API_URL, {
+    method: 'POST',
+    headers: {
+      'api-key': env.BREVO_API_KEY,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({
+      sender: { name: 'Mailzeon', email: env.BREVO_SENDER_EMAIL },
+      to: [{ email: to }],
       subject,
-      html,
-    });
-  } catch (err) {
-    // Log the real reason for Render logs, but never leak SMTP internals to
-    // the user — forgotPassword() always responds with the same generic
+      htmlContent: html,
+    }),
+  });
+
+  if (!res.ok) {
+    // Log the real reason for Render logs, but never leak provider internals
+    // to the user — forgotPassword() always responds with the same generic
     // message regardless of email delivery outcome.
-    console.error('Gmail SMTP send failed:', (err as Error).message);
+    const body = await res.text().catch(() => '');
+    console.error(`Brevo email failed (${res.status}):`, body);
     throw new Error('Failed to send email.');
   }
 };
