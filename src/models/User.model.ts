@@ -68,6 +68,20 @@ const UserSchema = new Schema<IUser>(
     },
 
     profileImage: String,
+
+    // ── Forgot / reset password ─────────────────────────────────────────────
+    // We store a SHA-256 hash of the reset token (never the raw token) so that
+    // even if the database is compromised, the token itself can't be reused —
+    // same principle as the password field, just a different hash algorithm
+    // since bcrypt is unnecessarily slow for a short-lived random token.
+    resetPasswordToken: {
+      type: String,
+      select: false,
+    },
+    resetPasswordExpires: {
+      type: Date,
+      select: false,
+    },
   },
   { timestamps: true }
 );
