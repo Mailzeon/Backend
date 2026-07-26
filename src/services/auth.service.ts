@@ -1,8 +1,15 @@
+import crypto from 'crypto';
 import { User } from '../models/User.model';
 import { Wallet } from '../models/Wallet.model';
 import { WorkerLevelModel } from '../models/WorkerLevel.model';
 import { signToken } from '../utils/jwt';
+import { sendPasswordResetEmail } from '../utils/email';
 import { IUser, UserRole } from '../types';
+
+// Reset link is valid for 30 minutes — short enough to limit the window for
+// abuse if an inbox is compromised, long enough for a real user to notice
+// the email and click it.
+const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
 
 interface RegisterInput {
   name: string;
@@ -72,6 +79,44 @@ export const authService = {
 
     // Assigning triggers the pre('save') bcrypt hash hook on User.model.ts
     user!.password = newPassword;
+    await user!.save();
+  },
+
+  // New: generates a one-time reset token, stores only its hash, and emails
+  // the raw token as a link. Always resolves silently (no error thrown for
+  // "email not found") so this endpoint can't be used to check which emails
+  // are registered on the platform.
+  async forgotPassword(email: string): Promise<void> {
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) return; // Silent no-op — don't leak whether the email exists
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+    user.resetPasswordToken = hashedToken;
+    user.resetPasswordExpires = new Date(Date.now() + RESET_TOKEN_TTL_MS);
+    // Skip password re-hash hook — we're not touching `password` here
+    await user.save({ validateBeforeSave: false });
+
+    await sendPasswordResetEmail(user.email, rawToken);
+  },
+
+  // New: verifies the raw token against the stored hash + expiry, then sets
+  // the new password. Throws a generic "invalid or expired" error either way
+  // (bad token vs expired token) so no extra info leaks to the caller.
+  async resetPassword(rawToken: string, newPassword: string): Promise<void> {
+    const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+    const user = await User.findOne({
+      resetPasswordToken: hashedToken,
+      resetPasswordExpires: { $gt: new Date() },
+    }).select('+password +resetPasswordToken +resetPasswordExpires');
+
+    if (!user) throwHttpError('This reset link is invalid or has expired.', 400);
+
+    user!.password = newPassword; // Triggers bcrypt hash hook
+    user!.resetPasswordToken = undefined;
+    user!.resetPasswordExpires = undefined;
     await user!.save();
   },
 };
