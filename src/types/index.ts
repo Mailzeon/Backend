@@ -46,6 +46,10 @@ export interface IUser extends Document {
     bankName: string;
   };
   profileImage?: string;
+  // Forgot/reset password — both select: false, so only present when
+  // explicitly requested with .select('+resetPasswordToken +resetPasswordExpires')
+  resetPasswordToken?: string;
+  resetPasswordExpires?: Date;
   createdAt: Date;
   updatedAt: Date;
   comparePassword(candidatePassword: string): Promise<boolean>;
