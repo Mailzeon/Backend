@@ -35,17 +35,27 @@ export const invalidateSettingsCache = (): void => {
 };
 
 // FIX: 'orderPrice'/'workerEarning' are gone — customer now sets their own
-// amount. This is kept only for any leftover frontend calls; it now reports
-// the *minimum* amount and current commission-implied worker share for a
-// hypothetical minimum order, purely informational.
-export const getPublicSettings = async (): Promise<{ minimumOrderAmount: number; platformCommissionRate: number }> => {
-  const [minimumOrderAmount, platformCommissionRate] = await Promise.all([
+// amount. Expanded to include orderTimerMinutes/autoCompleteHours too — these
+// were previously hardcoded ("10 minutes", "24 hours") in several frontend
+// pages instead of being read from here, so admin changes to those settings
+// never actually showed up anywhere outside the Settings page itself.
+export const getPublicSettings = async (): Promise<{
+  minimumOrderAmount: number;
+  platformCommissionRate: number;
+  orderTimerMinutes: number;
+  autoCompleteHours: number;
+}> => {
+  const [minimumOrderAmount, platformCommissionRate, orderTimerMinutes, autoCompleteHours] = await Promise.all([
     getSetting('minimumOrderAmount', '15'),
     getSetting('platformCommissionRate', '15'),
+    getSetting('orderTimerMinutes', '10'),
+    getSetting('autoCompleteHours', '24'),
   ]);
   return {
     minimumOrderAmount: parseInt(minimumOrderAmount),
     platformCommissionRate: parseInt(platformCommissionRate),
+    orderTimerMinutes: parseInt(orderTimerMinutes),
+    autoCompleteHours: parseInt(autoCompleteHours),
   };
 };
 
