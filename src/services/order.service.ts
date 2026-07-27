@@ -71,8 +71,9 @@ const generateRandomLocalPart = (): string => {
 export const orderService = {
   // ── Customer: create order ────────────────────────────────────────────────
   // REWORKED for Cashfree integration:
-  //   1. Customer now sets their own `amount` (validated against the live
-  //      minimumOrderAmount setting — Zod only enforces the absolute ₹15 floor).
+  //   1. Customer now sets their own `amount` — validated here against the
+  //      LIVE minimumOrderAmount setting (Zod only enforces a bare ₹1
+  //      sanity floor, not the real business minimum — see order.validator.ts).
   //   2. Commission (15%) is computed and LOCKED at creation time — later
   //      changes to platformCommissionRate never retroactively affect
   //      already-created orders.
