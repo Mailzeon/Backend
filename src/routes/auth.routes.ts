@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  register, login, getMe, changePassword, forgotPassword, resetPassword,
+  register, login, logout, getMe, changePassword, forgotPassword, resetPassword,
 } from '../controllers/auth.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authLimiter } from '../middleware/rateLimiter.middleware';
@@ -14,6 +14,9 @@ const router = Router();
 
 router.post('/register', authLimiter, validate(registerSchema), register);
 router.post('/login',    authLimiter, validate(loginSchema),    login);
+// New: clears the httpOnly session cookie. No auth middleware needed — see
+// controller comment for why.
+router.post('/logout', logout);
 router.get('/me', authenticate, getMe);
 
 // New: lets any logged-in user (including the seeded admin) change their password.
