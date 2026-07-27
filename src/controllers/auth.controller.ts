@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { authService } from '../services/auth.service';
 import { sendSuccess } from '../utils/response';
+import { setAuthCookie, clearAuthCookie } from '../utils/cookies';
 
 // Manual validation checks below are now redundant for well-formed requests
 // since the `validate(schema)` middleware runs first and guarantees shape —
@@ -9,18 +10,34 @@ import { sendSuccess } from '../utils/response';
 export const register = async (req: Request, res: Response): Promise<void> => {
   const { name, email, password, role } = req.body;
 
-  const result = await authService.register({ name, email, password, role });
+  const { user, token } = await authService.register({ name, email, password, role });
+  setAuthCookie(res, token);
+
   const message = role === 'worker'
     ? 'Account created! Your account is pending admin approval. You will be notified once approved.'
     : 'Account created successfully! Welcome to Marketplace.';
 
-  sendSuccess(res, message, result, 201);
+  // NOTE: the raw token is no longer included in the response body — it now
+  // lives only in the httpOnly cookie set above, which client-side
+  // JavaScript can't read. Only the non-sensitive user object goes to the
+  // frontend, which is all authStore.setAuth() needs.
+  sendSuccess(res, message, { user }, 201);
 };
 
 export const login = async (req: Request, res: Response): Promise<void> => {
   const { email, password } = req.body;
-  const result = await authService.login(email, password);
-  sendSuccess(res, 'Logged in successfully.', result);
+  const { user, token } = await authService.login(email, password);
+  setAuthCookie(res, token);
+  sendSuccess(res, 'Logged in successfully.', { user });
+};
+
+// New: clears the httpOnly session cookie. Doesn't require `authenticate` —
+// if the cookie is already missing/expired/invalid, clearing it again is a
+// harmless no-op, and gating this behind auth would just mean a stale
+// client can never successfully log itself out.
+export const logout = async (_req: Request, res: Response): Promise<void> => {
+  clearAuthCookie(res);
+  sendSuccess(res, 'Logged out successfully.');
 };
 
 export const getMe = async (req: Request, res: Response): Promise<void> => {
