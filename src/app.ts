@@ -2,6 +2,7 @@ import 'express-async-errors';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
 import mongoSanitize from 'express-mongo-sanitize';
 import { env } from './config/env';
 import { errorMiddleware } from './middleware/error.middleware';
@@ -46,6 +47,13 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
+
+// ── Cookie parsing ────────────────────────────────────────────────────────────
+// Populates req.cookies — needed so auth.middleware.ts can read the httpOnly
+// session cookie set by setAuthCookie() (see utils/cookies.ts). Only reads
+// the Cookie request header — doesn't touch the request body — so it's safe
+// to mount before or after the raw-body webhook route below either way.
+app.use(cookieParser());
 
 // ── Cashfree webhook — CRITICAL ORDERING ──────────────────────────────────────
 // Mounted with a raw-body parser BEFORE the global express.json() below.
