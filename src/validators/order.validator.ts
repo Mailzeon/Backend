@@ -8,9 +8,14 @@ export const EMAIL_DOMAINS = [
 ] as const;
 
 // REWORKED for custom customer pricing + Cashfree phone requirement.
-// `amount`: Zod enforces the absolute ₹15 floor as a fast sanity check;
-//   order.service.ts additionally checks against the LIVE, admin-configurable
-//   minimumOrderAmount setting (which could be raised above ₹15 later).
+// `amount`: Zod only enforces a bare sanity floor of ₹1 here (must be a
+//   positive amount) — it must NOT hardcode the real business minimum,
+//   because that lives in the admin-configurable minimumOrderAmount setting,
+//   which can be set to ANY value (including below ₹15). The actual minimum
+//   is enforced dynamically in order.service.ts against the live setting.
+//   (Previously this was `.min(15, ...)`, which silently overrode admin's
+//   setting whenever they lowered it below ₹15 — always rejecting with the
+//   Zod message before the service's live check ever ran.)
 // `phone`: optional here because if the customer already has a phone saved
 //   on their profile, the frontend won't send one — order.service.ts handles
 //   requiring it only when there's no saved phone to fall back on.
@@ -31,7 +36,7 @@ export const createOrderSchema = z.object({
     .regex(/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/, 'Use only letters, numbers, dots, underscores or hyphens')
     .optional(),
   amount: z.coerce.number({ invalid_type_error: 'Amount must be a number' })
-    .min(15, 'Minimum order amount is ₹15')
+    .min(1, 'Amount must be at least ₹1')
     .max(100000, 'For orders above ₹1,00,000 please contact support'),
   phone: z.string()
     .trim()
