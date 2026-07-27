@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { User } from '../models/User.model';
 import { verifyToken } from '../utils/jwt';
 import { sendError } from '../utils/response';
+import { AUTH_COOKIE_NAME } from '../utils/cookies';
 
 export const authenticate = async (
   req: Request,
@@ -9,14 +10,21 @@ export const authenticate = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const authHeader = req.headers.authorization;
+    // Primary: httpOnly cookie set by setAuthCookie() on login/register —
+    // JavaScript (and therefore any XSS payload) can never read this.
+    // Fallback: Authorization header — kept only for resilience (e.g. a
+    // non-browser API client); nothing in this codebase sends it anymore
+    // after the httpOnly cookie migration, so this path is normally unused.
+    const cookieToken = req.cookies?.[AUTH_COOKIE_NAME];
+    const authHeader  = req.headers.authorization;
+    const headerToken  = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : undefined;
+    const token = cookieToken || headerToken;
 
-    if (!authHeader?.startsWith('Bearer ')) {
+    if (!token) {
       sendError(res, 'Authentication required. Please log in.', 401);
       return;
     }
 
-    const token   = authHeader.split(' ')[1];
     const decoded = verifyToken(token);
 
     // Fetch user WITHOUT password — password is never needed after login
