@@ -79,7 +79,15 @@ const OrderSchema = new Schema<IOrder>(
     amount: {
       type: Number,
       required: true,
-      min: [15, 'Order amount must be at least ₹15'],
+      // Bare sanity floor only (must be positive) — NOT the real business
+      // minimum, which is admin-configurable via the minimumOrderAmount
+      // setting and enforced dynamically in order.service.ts BEFORE this
+      // document is ever saved. This was previously hardcoded to `15`,
+      // which silently overrode any admin setting below ₹15 — same bug
+      // as the one fixed in order.validator.ts, just one layer deeper
+      // (Zod runs first and was already fixed, but this Mongoose-level
+      // validator still fired at .save() time regardless).
+      min: [1, 'Order amount must be at least ₹1'],
     },
     workerEarning: {
       type: Number,
