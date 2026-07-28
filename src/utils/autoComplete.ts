@@ -1,97 +1,157 @@
 import { Order }              from '../models/Order.model';
-import { Wallet }             from '../models/Wallet.model';
-import { Transaction }        from '../models/Transaction.model';
+import { Dispute }            from '../models/Dispute.model';
 import { Notification }       from '../models/Notification.model';
+import { walletService }      from '../services/wallet.service';
 import { workerLevelService } from '../services/workerLevel.service';
 import { emitToUser, EVENTS } from '../socket/events';
 
 /**
- * Auto-complete job — runs every 5 minutes.
+ * Auto-complete / auto-cancel job — runs every 5 minutes.
  *
- * Handles orders that were not manually confirmed by the customer:
- *   - 'credentials_submitted' orders past their autoCompleteAt timestamp
- *   - 'verification_pending' orders past their autoCompleteAt timestamp
- *     (customer requested a code but never responded)
+ * Handles orders the customer or worker never manually resolved, once
+ * `autoCompleteAt` has passed. The outcome depends on WHO the order was
+ * waiting on, which the order's status already tells us:
  *
- * After completing, releases worker earnings and recalculates worker level.
+ *   - 'credentials_submitted' → worker delivered, customer never responded
+ *     at all (no code request, no report). Ball was in the CUSTOMER's court,
+ *     so the worker gets paid — this protects workers from customers who
+ *     simply ghost after receiving their account.
+ *
+ *   - 'verification_pending'  → customer asked the worker for a live
+ *     verification code and the WORKER never sent one. Ball was in the
+ *     WORKER's court, so the order is cancelled and the customer becomes
+ *     refund-eligible instead of the worker being paid — a silent worker
+ *     shouldn't get to keep the money for a job they didn't actually finish.
+ *
+ * Both paths reuse the exact same wallet-reversal / cancel / dispute /
+ * notification pattern as an admin manually resolving a dispute (see
+ * dispute.service.ts's `resolve()`) — the only difference is the system
+ * does it automatically instead of an admin clicking a button.
  */
 export const runAutoCompleteJob = async (): Promise<void> => {
   try {
     const now = new Date();
-
-    const expiredOrders = await Order.find({
-      status:        { $in: ['credentials_submitted', 'verification_pending'] },
-      autoCompleteAt: { $lte: now },
-    });
-
-    if (expiredOrders.length === 0) return;
-    console.log(`⚡ Auto-completing ${expiredOrders.length} order(s)...`);
-
-    for (const order of expiredOrders) {
-      // 1. Mark order as completed
-      order.status      = 'completed';
-      order.completedAt = now;
-      await order.save();
-
-      if (!order.workerId) continue;
-
-      const workerId   = order.workerId.toString();
-      const customerId = order.customerId.toString();
-
-      // 2. Release pending earnings → available balance
-      await Wallet.findOneAndUpdate(
-        { userId: order.workerId },
-        {
-          $inc: {
-            balance:        order.workerEarning,
-            pendingBalance: -order.workerEarning,
-            totalEarned:    order.workerEarning,
-          },
-        }
-      );
-
-      await Transaction.findOneAndUpdate(
-        { userId: order.workerId, orderId: order._id, status: 'pending', type: 'credit' },
-        {
-          status:      'completed',
-          description: `Auto-completed: Order #${order._id.toString().slice(-6).toUpperCase()}`,
-        }
-      );
-
-      // 3. Notify worker
-      const workerNotif = await Notification.create({
-        userId:    order.workerId,
-        title:     `₹${order.workerEarning} Credited (Auto-completed)`,
-        message:   `Order #${order._id.toString().slice(-6).toUpperCase()} was auto-completed after 24 hours. Earnings released.`,
-        type:      'order',
-        orderId:   order._id,
-        isRead:    false,
-        createdAt: now,
-      });
-      emitToUser(workerId, EVENTS.ORDER_COMPLETED, { orderId: order._id, notification: workerNotif });
-
-      // 4. Notify customer
-      const customerNotif = await Notification.create({
-        userId:    order.customerId,
-        title:     '✅ Order Auto-Completed',
-        message:   'Your order was automatically marked complete. We hope everything went well!',
-        type:      'order',
-        orderId:   order._id,
-        isRead:    false,
-        createdAt: now,
-      });
-      emitToUser(customerId, EVENTS.ORDER_COMPLETED, { orderId: order._id, notification: customerNotif });
-
-      // 5. FIX: Recalculate worker level after every auto-completion —
-      // previously auto-completed orders never updated the worker's level.
-      workerLevelService.recalculate(workerId).catch(err =>
-        console.error(`[AutoComplete][WorkerLevel] Failed for worker ${workerId}:`, err)
-      );
-    }
+    await autoCompleteAbandonedByCustomer(now);
+    await autoCancelUnresponsiveWorker(now);
   } catch (error) {
     console.error('[AutoComplete] Job error:', error);
   }
 };
+
+// ── Customer never responded — pay the worker (unchanged behavior) ─────────────
+async function autoCompleteAbandonedByCustomer(now: Date): Promise<void> {
+  const expiredOrders = await Order.find({
+    status:         'credentials_submitted',
+    autoCompleteAt: { $lte: now },
+  });
+
+  if (expiredOrders.length === 0) return;
+  console.log(`⚡ Auto-completing ${expiredOrders.length} abandoned order(s) (customer silent)...`);
+
+  for (const order of expiredOrders) {
+    order.status      = 'completed';
+    order.completedAt = now;
+    await order.save();
+
+    if (!order.workerId) continue;
+    const workerId   = order.workerId.toString();
+    const customerId = order.customerId.toString();
+    const orderRef   = order._id.toString().slice(-6).toUpperCase();
+
+    await walletService.releaseFromPending(
+      workerId, order.workerEarning, order._id,
+      `Auto-completed: Order #${orderRef}`
+    );
+
+    const workerNotif = await Notification.create({
+      userId: workerId,
+      title:  `₹${order.workerEarning} Credited (Auto-completed)`,
+      message: `Order #${orderRef} was auto-completed after 24 hours of no customer response. Earnings released.`,
+      type: 'order', orderId: order._id, isRead: false, createdAt: now,
+    });
+    emitToUser(workerId, EVENTS.ORDER_COMPLETED, { orderId: order._id, notification: workerNotif });
+
+    const customerNotif = await Notification.create({
+      userId: customerId,
+      title:  '✅ Order Auto-Completed',
+      message: 'Your order was automatically marked complete. We hope everything went well!',
+      type: 'order', orderId: order._id, isRead: false, createdAt: now,
+    });
+    emitToUser(customerId, EVENTS.ORDER_COMPLETED, { orderId: order._id, notification: customerNotif });
+
+    workerLevelService.recalculate(workerId).catch(err =>
+      console.error(`[AutoComplete][WorkerLevel] Failed for worker ${workerId}:`, err)
+    );
+  }
+}
+
+// ── Worker never sent the verification code — cancel + refund the customer ─────
+async function autoCancelUnresponsiveWorker(now: Date): Promise<void> {
+  const stuckOrders = await Order.find({
+    status:         'verification_pending',
+    autoCompleteAt: { $lte: now },
+  });
+
+  if (stuckOrders.length === 0) return;
+  console.log(`⚡ Auto-cancelling ${stuckOrders.length} order(s) (worker unresponsive to code request)...`);
+
+  for (const order of stuckOrders) {
+    if (!order.workerId) continue;
+    const workerId   = order.workerId.toString();
+    const customerId = order.customerId.toString();
+    const orderRef   = order._id.toString().slice(-6).toUpperCase();
+
+    order.status = 'cancelled';
+    await order.save();
+
+    // Reverse the worker's pending earnings — they never actually finished
+    // the job (customer's live verification code was never provided).
+    await walletService.reversePendingEarnings(
+      workerId, order.workerEarning, order._id,
+      `Reversed: Order #${orderRef} (worker unresponsive to code request)`
+    );
+
+    // A resolved Dispute record is what makes an order refund-eligible in
+    // refund.service.ts — creating one here (instead of requiring the
+    // customer to manually file one) means the customer can request their
+    // refund immediately, with no extra step needed on their end.
+    await Dispute.create({
+      orderId: order._id,
+      customerId: order.customerId,
+      workerId,
+      reason: 'other',
+      description: 'Auto-resolved by system: worker did not provide a verification code within 24 hours of the customer\'s request.',
+      status: 'resolved',
+      adminNote: 'Auto-resolved — worker unresponsive to verification code request.',
+      resolvedAt: now,
+    });
+
+    await Promise.all([
+      Notification.create({
+        userId: workerId,
+        title:  'Order Cancelled — No Response',
+        message: `Order #${orderRef} was cancelled after you didn't respond to the customer's verification code request within 24 hours. Your pending earnings for this order have been reversed.`,
+        type: 'dispute', orderId: order._id, isRead: false, createdAt: now,
+      }),
+      Notification.create({
+        userId: customerId,
+        title:  'Order Cancelled — Refund Available',
+        message: `The worker didn't respond to your verification code request, so Order #${orderRef} (₹${order.amount}) has been cancelled. You can now request a refund from the order page.`,
+        type: 'dispute', orderId: order._id, isRead: false, createdAt: now,
+      }),
+    ]);
+
+    emitToUser(workerId,   EVENTS.ORDER_CANCELLED, { orderId: order._id });
+    emitToUser(customerId, EVENTS.ORDER_CANCELLED, { orderId: order._id });
+
+    // A worker going silent on a live customer request is worse for their
+    // reliability stats than a customer simply ghosting — recalculating
+    // here means it counts against them the same way a lost dispute would.
+    workerLevelService.recalculate(workerId).catch(err =>
+      console.error(`[AutoComplete][WorkerLevel] Failed for worker ${workerId}:`, err)
+    );
+  }
+}
 
 export const startAutoCompleteJob = (): void => {
   const INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
