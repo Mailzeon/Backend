@@ -50,4 +50,14 @@ export const env = {
   // Verification) — NOT a full domain, just one email address you own.
   BREVO_API_KEY:      optional('BREVO_API_KEY'),
   BREVO_SENDER_EMAIL: optional('BREVO_SENDER_EMAIL'),
+
+  // NEW — Web Push (browser/phone push notifications, even when the site
+  // isn't open). VAPID keypair identifies our server to push services
+  // (Google FCM for Chrome/Android, Apple's push service for Safari/iOS,
+  // etc.) — same public/private-key idea as everything else here, just for
+  // a different protocol. Optional so the server still boots without it;
+  // pushNotification sends simply no-op (logged) if unconfigured.
+  VAPID_PUBLIC_KEY:  optional('VAPID_PUBLIC_KEY'),
+  VAPID_PRIVATE_KEY: optional('VAPID_PRIVATE_KEY'),
+  VAPID_SUBJECT:     optional('VAPID_SUBJECT', 'mailto:admin@mailzeon.com'),
 } as const;
