@@ -4,6 +4,7 @@ import { CASHFREE_BASE_URL, cashfreeHeaders } from '../config/cashfree';
 import { Order } from '../models/Order.model';
 import { notificationService } from './notification.service';
 import { emitToMarketplace, EVENTS } from '../socket/events';
+import { sendPushToAllWorkers } from '../utils/webPush';
 
 const throwErr = (msg: string, code = 400): never => {
   throw Object.assign(new Error(msg), { statusCode: code });
@@ -139,6 +140,17 @@ export const paymentService = {
       requestedEmail: order.requestedEmail,
       createdAt:      order.createdAt,
     });
+
+    // NEW: also push-notify every subscribed worker directly — the socket
+    // broadcast above only reaches workers who currently have the site open
+    // in a tab. This is what actually reaches a worker's phone/browser when
+    // they're not sitting on the site (the whole point of this feature).
+    sendPushToAllWorkers({
+      title:   '🆕 New order available!',
+      message: `${order.serviceName} — ₹${order.workerEarning} to earn. Tap to view.`,
+      orderId: order._id.toString(),
+      url:     '/worker/marketplace',
+    }).catch(err => console.error('[Payment] Worker push broadcast failed:', err));
 
     await notificationService.create({
       userId:  order.customerId,
