@@ -12,6 +12,8 @@ import { Dispute }           from '../models/Dispute.model';
 import { Rating }            from '../models/Rating.model';
 import { Wallet }             from '../models/Wallet.model';
 import { WorkerLevelModel }  from '../models/WorkerLevel.model';
+import { Transaction }        from '../models/Transaction.model';
+import { Notification }       from '../models/Notification.model';
 import { withdrawalService } from '../services/withdrawal.service';
 import { refundService }     from '../services/refund.service';
 import { disputeService }    from '../services/dispute.service';
@@ -319,6 +321,57 @@ router.get('/leaderboard', async (_req: Request, res: Response) => {
     .sort({ completedOrders: -1, averageRating: -1 })
     .limit(10);
   sendSuccess(res, 'Leaderboard fetched.', top);
+});
+
+// ── Danger zone: reset all test/activity data ─────────────────────────────────
+// Wipes every order, dispute, refund/withdraw request, transaction,
+// notification, and rating, and zeroes out every wallet + worker level —
+// leaving every USER ACCOUNT (name/email/password/role/approval status/
+// profile picture), Settings, and push subscriptions completely untouched.
+// This is for going from "tested with dummy activity" to "launch-ready with
+// real accounts, zero history" without recreating any accounts.
+//
+// Gated by requireRole('admin') above (whole router) PLUS a typed
+// confirmation phrase in the body, so it can never fire from a stray click —
+// there is no undo once this runs.
+router.post('/reset-test-data', async (req: Request, res: Response) => {
+  const { confirm } = req.body;
+  if (confirm !== 'RESET') {
+    sendError(res, 'Confirmation phrase did not match. Nothing was deleted.', 400);
+    return;
+  }
+
+  const [orders, disputes, refunds, withdrawals, transactions, notifications, ratings] =
+    await Promise.all([
+      Order.deleteMany({}),
+      Dispute.deleteMany({}),
+      RefundRequest.deleteMany({}),
+      WithdrawRequest.deleteMany({}),
+      Transaction.deleteMany({}),
+      Notification.deleteMany({}),
+      Rating.deleteMany({}),
+    ]);
+
+  const walletReset = await Wallet.updateMany(
+    {},
+    { $set: { balance: 0, pendingBalance: 0, totalEarned: 0 } }
+  );
+  const levelReset = await WorkerLevelModel.updateMany(
+    {},
+    { $set: { level: 'bronze', completedOrders: 0, totalEarnings: 0, successRate: 100, averageRating: 0 } }
+  );
+
+  sendSuccess(res, 'All test data cleared. User accounts were left untouched.', {
+    ordersDeleted:        orders.deletedCount,
+    disputesDeleted:      disputes.deletedCount,
+    refundsDeleted:       refunds.deletedCount,
+    withdrawalsDeleted:   withdrawals.deletedCount,
+    transactionsDeleted:  transactions.deletedCount,
+    notificationsDeleted: notifications.deletedCount,
+    ratingsDeleted:       ratings.deletedCount,
+    walletsReset:         walletReset.modifiedCount,
+    workerLevelsReset:    levelReset.modifiedCount,
+  });
 });
 
 export default router;
