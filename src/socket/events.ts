@@ -20,6 +20,7 @@ export const EVENTS = {
   // Wallet & admin
   WITHDRAWAL_DONE:   'withdrawal-done',    // → worker's room
   WORKER_APPROVED:   'worker-approved',    // → worker's room
+  WORKER_SUSPENDED:  'worker-suspended',   // → worker's room
 
   // Generic push notification
   NOTIFICATION:      'notification',       // → any user's room
