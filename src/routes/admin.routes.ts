@@ -222,6 +222,17 @@ router.patch('/users/:id/approve', async (req: Request, res: Response) => {
       type:    'system',
     });
     emitToUser(user._id.toString(), EVENTS.WORKER_APPROVED, {});
+  } else {
+    // FIX: this branch never existed before — a suspended worker got no
+    // notification and no live update at all, only finding out the next
+    // time they happened to log in.
+    await notificationService.create({
+      userId:  user._id,
+      title:   '⛔ Account Suspended',
+      message: 'Your worker account has been suspended by an admin. Contact support if you believe this is a mistake.',
+      type:    'system',
+    });
+    emitToUser(user._id.toString(), EVENTS.WORKER_SUSPENDED, {});
   }
 
   sendSuccess(res, `Worker ${isApproved ? 'approved' : 'suspended'}.`, user);
@@ -316,9 +327,14 @@ router.patch('/disputes/:id', async (req: Request, res: Response) => {
 
 // ── Leaderboard ───────────────────────────────────────────────────────────────
 router.get('/leaderboard', async (_req: Request, res: Response) => {
-  const top = await WorkerLevelModel.find()
+  // Same fix as leaderboard.routes.ts — only workers who've actually
+  // completed at least one order get a meaningful rank; otherwise a batch
+  // of freshly-reset/registered workers all tied at 0 would show up
+  // ordered by MongoDB's natural/insertion order, which looks like a real
+  // but meaningless ranking.
+  const top = await WorkerLevelModel.find({ completedOrders: { $gt: 0 } })
     .populate('workerId', 'name email profileImage level')
-    .sort({ completedOrders: -1, averageRating: -1 })
+    .sort({ completedOrders: -1, averageRating: -1, _id: 1 })
     .limit(10);
   sendSuccess(res, 'Leaderboard fetched.', top);
 });
