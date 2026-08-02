@@ -36,6 +36,13 @@ export interface IOrder extends Document {
   cashfreeOrderId?: string;
   paymentStatus: 'pending' | 'success' | 'failed';
 
+  // NEW — how much of this order's `amount` was paid using wallet credit
+  // (from a previous refund) rather than Cashfree. The remainder
+  // (amount - walletAmountApplied) is what actually goes through Cashfree.
+  // Worker earning/commission are still calculated off the full `amount` —
+  // this only affects how the CUSTOMER's payment was split.
+  walletAmountApplied: number;
+
   // The exact email address the customer wants created for this order.
   requestedEmail?: string;
 
@@ -128,6 +135,11 @@ const OrderSchema = new Schema<IOrder>(
       type: String,
       enum: ['pending', 'success', 'failed'],
       default: 'pending',
+    },
+    walletAmountApplied: {
+      type: Number,
+      default: 0,
+      min: [0, 'Wallet amount applied cannot be negative'],
     },
 
     requestedEmail: {
