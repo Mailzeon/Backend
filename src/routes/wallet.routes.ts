@@ -6,7 +6,7 @@ import { sendSuccess } from '../utils/response';
 import { Request, Response } from 'express';
 
 const router = Router();
-router.use(authenticate, requireRole('worker'));
+router.use(authenticate, requireRole('worker', 'customer'));
 
 router.get('/', async (req: Request, res: Response) => {
   const wallet = await walletService.getBalance(req.user!._id.toString());
