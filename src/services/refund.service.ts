@@ -12,17 +12,20 @@ export const refundService = {
   // A refund can only be requested when:
   //   1. The order belongs to this customer
   //   2. The order is 'cancelled'
-  //   3. That cancellation came from a dispute resolved IN THE CUSTOMER'S
-  //      FAVOR (Dispute.status === 'resolved') — self-cancelled pending
-  //      orders are NOT eligible, since no payment was actually processed
-  //      for a service that was never attempted.
+  //   3. EITHER no worker was ever assigned (customer cancelled their own
+  //      pending order — already paid via Cashfree by the time an order
+  //      reaches 'pending', so this is an unambiguous clean refund, no
+  //      dispute needed to justify it) OR the cancellation came from a
+  //      dispute resolved IN THE CUSTOMER'S FAVOR (Dispute.status === 'resolved')
   //   4. No refund request already exists for this order
   async create(orderId: string, customerId: string, upiId: string): Promise<IRefundRequest> {
     const order = await Order.findOne({ _id: orderId, customerId, status: 'cancelled' });
     if (!order) throwErr('This order is not eligible for a refund.', 400);
 
-    const dispute = await Dispute.findOne({ orderId, status: 'resolved' });
-    if (!dispute) throwErr('This order is not eligible for a refund.', 400);
+    if (order.workerId) {
+      const dispute = await Dispute.findOne({ orderId, status: 'resolved' });
+      if (!dispute) throwErr('This order is not eligible for a refund.', 400);
+    }
 
     const existing = await RefundRequest.findOne({ orderId });
     if (existing) throwErr('A refund request already exists for this order.', 409);
