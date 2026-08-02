@@ -2,6 +2,7 @@ import { Order }              from '../models/Order.model';
 import { Dispute }            from '../models/Dispute.model';
 import { Notification }       from '../models/Notification.model';
 import { walletService }      from '../services/wallet.service';
+import { paymentService }     from '../services/payment.service';
 import { workerLevelService } from '../services/workerLevel.service';
 import { emitToUser, EVENTS } from '../socket/events';
 
@@ -33,6 +34,7 @@ export const runAutoCompleteJob = async (): Promise<void> => {
     const now = new Date();
     await autoCompleteAbandonedByCustomer(now);
     await autoCancelUnresponsiveWorker(now);
+    await cleanupAbandonedPayments(now);
   } catch (error) {
     console.error('[AutoComplete] Job error:', error);
   }
@@ -156,6 +158,39 @@ async function autoCancelUnresponsiveWorker(now: Date): Promise<void> {
     // here means it counts against them the same way a lost dispute would.
     workerLevelService.recalculate(workerId).catch(err =>
       console.error(`[AutoComplete][WorkerLevel] Failed for worker ${workerId}:`, err)
+    );
+  }
+}
+
+// ── Abandoned checkout cleanup ───────────────────────────────────────────────
+// A customer can create an order, optionally apply wallet credit toward it,
+// then simply close the tab without ever completing (or explicitly
+// cancelling) the Cashfree checkout — no webhook ever fires, no
+// verify-on-return ever happens, so the order was previously left stuck in
+// 'payment_pending' forever. Worse, if wallet credit was applied, that
+// credit stayed deducted with no order ever actually going through.
+//
+// This treats anything still 'payment_pending' after ABANDONED_TIMEOUT_MS
+// as dead and reuses paymentService.markPaymentFailed() — the exact same
+// function the webhook/verify-on-return failure paths already call — so
+// the wallet-credit refund and customer notification happen identically,
+// with no separate logic to keep in sync.
+const ABANDONED_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
+
+async function cleanupAbandonedPayments(now: Date): Promise<void> {
+  const cutoff = new Date(now.getTime() - ABANDONED_TIMEOUT_MS);
+
+  const stale = await Order.find({
+    status:    'payment_pending',
+    createdAt: { $lte: cutoff },
+  }).select('_id');
+
+  if (stale.length === 0) return;
+  console.log(`⚡ Marking ${stale.length} abandoned checkout(s) as failed...`);
+
+  for (const order of stale) {
+    await paymentService.markPaymentFailed(order._id.toString()).catch((err) =>
+      console.error(`[AutoComplete][CleanupAbandoned] Failed for order ${order._id}:`, err)
     );
   }
 }
