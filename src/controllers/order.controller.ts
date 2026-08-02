@@ -6,7 +6,7 @@ import { sendSuccess, sendError } from '../utils/response';
 // `phone`, and returns `paymentSessionId` (needed by the frontend to open
 // Cashfree's hosted checkout) alongside the created order.
 export const createOrder = async (req: Request, res: Response) => {
-  const { serviceName, domain, emailType, customLocalPart, amount, phone } = req.body;
+  const { serviceName, domain, emailType, customLocalPart, amount, phone, useWalletCredit } = req.body;
 
   const result = await orderService.createOrder(
     req.user!._id.toString(),
@@ -15,12 +15,18 @@ export const createOrder = async (req: Request, res: Response) => {
     emailType,
     amount,
     phone,
-    customLocalPart
+    customLocalPart,
+    useWalletCredit
   );
 
-  sendSuccess(res, 'Order created. Complete payment to publish it to the marketplace.', {
+  const message = result.paidWithWallet
+    ? 'Order created and paid with wallet credit — it\'s already live in the marketplace!'
+    : 'Order created. Complete payment to publish it to the marketplace.';
+
+  sendSuccess(res, message, {
     order: result.order,
     paymentSessionId: result.paymentSessionId,
+    paidWithWallet: result.paidWithWallet,
   }, 201);
 };
 
