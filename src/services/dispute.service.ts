@@ -83,6 +83,15 @@ export const disputeService = {
           `Reversed: Order #${orderRef} (dispute upheld)`
         );
 
+        // NEW: instant wallet credit for the customer, replacing the old
+        // "go request a UPI refund and wait for admin" flow — this dispute
+        // is already adjudicated (upheld in the customer's favor), so
+        // there's nothing left to manually review before crediting them.
+        await walletService.creditRefund(
+          customerId, order.amount, order._id,
+          `Refund: Order #${orderRef} (dispute resolved in your favor)`
+        );
+
         await Promise.all([
           Notification.create({
             userId: workerId,
@@ -92,9 +101,8 @@ export const disputeService = {
           }),
           Notification.create({
             userId: customerId,
-            title: 'Dispute Resolved',
-            // NEW: mentions the refund option now available on the order page.
-            message: `Your dispute was resolved in your favor and the order (₹${order.amount}) has been cancelled. You can now request a refund from the order page.`,
+            title: '💰 Refund Credited',
+            message: `Your dispute was resolved in your favor. ₹${order.amount} has been credited to your Mailzeon wallet — use it on your next order.`,
             type: 'dispute', orderId: order._id, isRead: false, createdAt: new Date(),
           }),
         ]);
