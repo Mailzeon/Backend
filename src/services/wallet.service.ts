@@ -84,4 +84,22 @@ export const walletService = {
   async getTransactions(userId: string) {
     return Transaction.find({ userId }).sort({ createdAt: -1 }).limit(100).lean();
   },
+
+  // NEW: instant refund-as-wallet-credit. Used whenever a paid order is
+  // cancelled — whether the customer cancelled it themselves (before any
+  // worker accepted) or a dispute/auto-cancel resolved in their favor.
+  // Credits `balance` directly (not `pendingBalance`) since there's no
+  // holding period to wait out — the customer can spend it on their very
+  // next order immediately. This replaces the old manual "request a UPI
+  // refund → admin pays by hand" flow for these cases entirely.
+  async creditRefund(
+    userId: Types.ObjectId | string,
+    amount: number,
+    orderId: Types.ObjectId | string,
+    description: string
+  ) {
+    await walletService.getOrCreate(userId);
+    await Wallet.findOneAndUpdate({ userId }, { $inc: { balance: amount } });
+    await Transaction.create({ userId, orderId, type: 'credit', amount, status: 'completed', description });
+  },
 };
