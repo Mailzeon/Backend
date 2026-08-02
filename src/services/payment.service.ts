@@ -3,6 +3,7 @@ import { env } from '../config/env';
 import { CASHFREE_BASE_URL, cashfreeHeaders } from '../config/cashfree';
 import { Order } from '../models/Order.model';
 import { notificationService } from './notification.service';
+import { walletService } from './wallet.service';
 import { emitToMarketplace, EVENTS } from '../socket/events';
 import { sendPushToAllWorkers } from '../utils/webPush';
 
@@ -152,10 +153,20 @@ export const paymentService = {
       url:     '/worker/marketplace',
     }).catch(err => console.error('[Payment] Worker push broadcast failed:', err));
 
+    const cashfreeCharged = Math.round((order.amount - order.walletAmountApplied) * 100) / 100;
+    let paymentMessage: string;
+    if (order.walletAmountApplied > 0 && cashfreeCharged === 0) {
+      paymentMessage = `Paid entirely with ₹${order.walletAmountApplied} wallet credit — no additional payment needed. Your order is now live in the marketplace.`;
+    } else if (order.walletAmountApplied > 0) {
+      paymentMessage = `₹${order.walletAmountApplied} wallet credit + ₹${cashfreeCharged} payment received. Your order is now live in the marketplace.`;
+    } else {
+      paymentMessage = `Your payment of ₹${order.amount} was successful. Your order is now live in the marketplace.`;
+    }
+
     await notificationService.create({
       userId:  order.customerId,
       title:   '✅ Payment Successful!',
-      message: `Your payment of ₹${order.amount} was successful. Your order is now live in the marketplace.`,
+      message: paymentMessage,
       type:    'order',
       orderId: order._id,
     });
@@ -170,6 +181,19 @@ export const paymentService = {
     );
 
     if (!order) return; // Already processed — no-op
+
+    // NEW: if part of this order's payment was covered by wallet credit
+    // (see order.service.ts createOrder — partial wallet + Cashfree split),
+    // and the Cashfree portion for the REMAINDER failed, refund that
+    // wallet portion back — otherwise the customer would lose real credit
+    // for an order that never actually went through.
+    if (order.walletAmountApplied > 0) {
+      const orderRef = order._id.toString().slice(-6).toUpperCase();
+      await walletService.creditRefund(
+        order.customerId.toString(), order.walletAmountApplied, order._id,
+        `Refund: Order #${orderRef} payment failed — wallet portion returned`
+      );
+    }
 
     await notificationService.create({
       userId:  order.customerId,
