@@ -127,23 +127,31 @@ export const orderService = {
       finalPhone = phone;
     }
 
-    // NEW: pay with wallet credit (from a previous refund) instead of
-    // Cashfree, if the customer opted in AND their balance fully covers
-    // this order's amount. Partial credit is intentionally NOT supported
-    // yet (V1) — the balance stays untouched and available for a future,
-    // smaller/equal order instead of splitting payment across two methods.
-    let paidWithWallet = false;
+    // NEW: pay with wallet credit (from a previous refund) — applies as
+    // much of the customer's balance as covers this order, up to the full
+    // amount. If it fully covers the order, Cashfree is skipped entirely.
+    // Otherwise the remainder goes through Cashfree as normal — e.g. ₹30
+    // wallet credit on a ₹70 order means ₹30 is deducted now and the
+    // customer only pays ₹40 via Cashfree.
+    let walletAmountApplied = 0;
     if (useWalletCredit) {
-      // Atomic check-and-debit — the `balance: { $gte: amount }` filter
-      // means this simply fails to match (returns null) if the balance is
-      // insufficient, same safety pattern as walletService.debit().
-      const debited = await Wallet.findOneAndUpdate(
-        { userId: customerId, balance: { $gte: amount } },
-        { $inc: { balance: -amount } },
-        { new: true }
-      );
-      paidWithWallet = !!debited;
+      const wallet = await walletService.getBalance(customerId);
+      const toApply = Math.min(wallet.balance, amount);
+      if (toApply > 0) {
+        // Atomic check-and-debit — the `balance: { $gte: toApply }` filter
+        // means this simply fails to match (returns null) if another
+        // request already spent the balance in the meantime (e.g. two
+        // tabs open), same safety pattern as walletService.debit().
+        const debited = await Wallet.findOneAndUpdate(
+          { userId: customerId, balance: { $gte: toApply } },
+          { $inc: { balance: -toApply } },
+          { new: true }
+        );
+        if (debited) walletAmountApplied = toApply;
+      }
     }
+
+    const remainingAmount = Math.round((amount - walletAmountApplied) * 100) / 100;
 
     const order = await Order.create({
       customerId,
@@ -155,14 +163,21 @@ export const orderService = {
       requestedEmail,
       status: 'payment_pending',
       paymentStatus: 'pending',
+      walletAmountApplied,
     });
 
-    if (paidWithWallet) {
+    if (walletAmountApplied > 0) {
       const orderRef = order._id.toString().slice(-6).toUpperCase();
       await Transaction.create({
-        userId: customerId, orderId: order._id, type: 'debit', amount,
-        status: 'completed', description: `Wallet payment: Order #${orderRef}`,
+        userId: customerId, orderId: order._id, type: 'debit', amount: walletAmountApplied,
+        status: 'completed',
+        description: remainingAmount === 0
+          ? `Wallet payment: Order #${orderRef}`
+          : `Wallet credit applied: Order #${orderRef} (₹${remainingAmount} paid via Cashfree)`,
       });
+    }
+
+    if (remainingAmount === 0) {
       // Reuses the exact same idempotent transition + marketplace
       // broadcast + worker push-notification logic that a normal Cashfree
       // webhook triggers — no duplicated logic, no separate code path that
@@ -174,7 +189,7 @@ export const orderService = {
     try {
       const { paymentSessionId, cashfreeOrderId } = await paymentService.createCashfreeOrder(
         order._id.toString(),
-        amount,
+        remainingAmount,
         customerId,
         customer!.email,
         finalPhone
@@ -190,6 +205,18 @@ export const orderService = {
       order.status = 'payment_failed';
       order.paymentStatus = 'failed';
       await order.save();
+
+      // Refund any wallet credit that was already deducted above — the
+      // customer shouldn't lose real credit just because Cashfree's side
+      // never even got created.
+      if (walletAmountApplied > 0) {
+        const orderRef = order._id.toString().slice(-6).toUpperCase();
+        await walletService.creditRefund(
+          customerId, walletAmountApplied, order._id,
+          `Refund: Order #${orderRef} payment setup failed — wallet portion returned`
+        );
+      }
+
       throw err;
     }
   },
