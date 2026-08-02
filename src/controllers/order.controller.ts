@@ -21,12 +21,15 @@ export const createOrder = async (req: Request, res: Response) => {
 
   const message = result.paidWithWallet
     ? 'Order created and paid with wallet credit — it\'s already live in the marketplace!'
-    : 'Order created. Complete payment to publish it to the marketplace.';
+    : result.order.walletAmountApplied > 0
+      ? 'Wallet credit applied — complete the remaining payment to publish your order.'
+      : 'Order created. Complete payment to publish it to the marketplace.';
 
   sendSuccess(res, message, {
     order: result.order,
     paymentSessionId: result.paymentSessionId,
     paidWithWallet: result.paidWithWallet,
+    walletAmountApplied: result.order.walletAmountApplied,
   }, 201);
 };
 
