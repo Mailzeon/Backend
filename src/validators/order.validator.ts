@@ -42,6 +42,10 @@ export const createOrderSchema = z.object({
     .trim()
     .regex(/^[6-9]\d{9}$/, 'Enter a valid 10-digit Indian mobile number')
     .optional(),
+  // NEW: customer opts in to pay with their Mailzeon wallet credit (from a
+  // previous refund) instead of Cashfree. Only applied if the balance
+  // fully covers the order amount — see order.service.ts createOrder().
+  useWalletCredit: z.boolean().optional(),
 }).refine(
   (data) => data.emailType !== 'custom' || (!!data.customLocalPart && data.customLocalPart.length > 0),
   { message: 'Enter your custom email name', path: ['customLocalPart'] }
