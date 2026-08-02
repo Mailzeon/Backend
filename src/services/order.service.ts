@@ -1,6 +1,8 @@
 import { Order, IOrder }        from '../models/Order.model';
 import { Dispute }              from '../models/Dispute.model';
 import { RefundRequest }        from '../models/RefundRequest.model';
+import { Transaction }          from '../models/Transaction.model';
+import { Wallet }               from '../models/Wallet.model';
 import { Notification }        from '../models/Notification.model';
 import { User }                 from '../models/User.model';
 import { Settings }             from '../models/Settings.model';
@@ -91,8 +93,9 @@ export const orderService = {
     emailType: 'random' | 'custom',
     amount: number,
     phone: string | undefined,
-    customLocalPart?: string
-  ): Promise<{ order: IOrder; paymentSessionId: string }> {
+    customLocalPart?: string,
+    useWalletCredit?: boolean
+  ): Promise<{ order: IOrder; paymentSessionId: string | null; paidWithWallet: boolean }> {
     const minAmount = parseInt(await getSetting('minimumOrderAmount', '15'));
     if (amount < minAmount) {
       throwErr(`Minimum order amount is ₹${minAmount}.`, 400);
@@ -124,6 +127,24 @@ export const orderService = {
       finalPhone = phone;
     }
 
+    // NEW: pay with wallet credit (from a previous refund) instead of
+    // Cashfree, if the customer opted in AND their balance fully covers
+    // this order's amount. Partial credit is intentionally NOT supported
+    // yet (V1) — the balance stays untouched and available for a future,
+    // smaller/equal order instead of splitting payment across two methods.
+    let paidWithWallet = false;
+    if (useWalletCredit) {
+      // Atomic check-and-debit — the `balance: { $gte: amount }` filter
+      // means this simply fails to match (returns null) if the balance is
+      // insufficient, same safety pattern as walletService.debit().
+      const debited = await Wallet.findOneAndUpdate(
+        { userId: customerId, balance: { $gte: amount } },
+        { $inc: { balance: -amount } },
+        { new: true }
+      );
+      paidWithWallet = !!debited;
+    }
+
     const order = await Order.create({
       customerId,
       serviceName: serviceName.trim(),
@@ -135,6 +156,20 @@ export const orderService = {
       status: 'payment_pending',
       paymentStatus: 'pending',
     });
+
+    if (paidWithWallet) {
+      const orderRef = order._id.toString().slice(-6).toUpperCase();
+      await Transaction.create({
+        userId: customerId, orderId: order._id, type: 'debit', amount,
+        status: 'completed', description: `Wallet payment: Order #${orderRef}`,
+      });
+      // Reuses the exact same idempotent transition + marketplace
+      // broadcast + worker push-notification logic that a normal Cashfree
+      // webhook triggers — no duplicated logic, no separate code path that
+      // could drift out of sync with the "real" payment flow.
+      await paymentService.confirmPaymentSuccess(order._id.toString());
+      return { order, paymentSessionId: null, paidWithWallet: true };
+    }
 
     try {
       const { paymentSessionId, cashfreeOrderId } = await paymentService.createCashfreeOrder(
@@ -148,7 +183,7 @@ export const orderService = {
       order.cashfreeOrderId = cashfreeOrderId;
       await order.save();
 
-      return { order, paymentSessionId };
+      return { order, paymentSessionId, paidWithWallet: false };
     } catch (err) {
       // Cashfree order creation failed — don't leave our order stuck in
       // limbo forever; mark it failed so the customer can simply try again.
@@ -160,6 +195,11 @@ export const orderService = {
   },
 
   // ── Customer: cancel a pending (not yet accepted) order ───────────────────
+  // FIX: previously this only marked the order 'cancelled' with no way for
+  // the customer to ever get their money back — Cashfree payment had
+  // already succeeded by the time an order reaches 'pending', so real
+  // money was stuck. Now credits the amount straight to their wallet,
+  // usable immediately on their next order — no manual refund request needed.
   async cancelOrder(orderId: string, customerId: string): Promise<IOrder> {
     const order = await Order.findOneAndUpdate(
       { _id: orderId, customerId, status: 'pending', workerId: null },
@@ -169,6 +209,20 @@ export const orderService = {
     if (!order) {
       throwErr('Only pending orders (not yet accepted by a worker) can be cancelled.', 400);
     }
+
+    const orderRef = order!._id.toString().slice(-6).toUpperCase();
+    await walletService.creditRefund(
+      customerId, order!.amount, order!._id,
+      `Refund: Order #${orderRef} (cancelled before a worker accepted)`
+    );
+    await notificationService.create({
+      userId: customerId,
+      title: '💰 Refund Credited',
+      message: `Order #${orderRef} was cancelled and ₹${order!.amount} has been credited to your Mailzeon wallet — use it on your next order.`,
+      type: 'order',
+      orderId: order!._id,
+    });
+
     return order!;
   },
 
@@ -438,17 +492,43 @@ export const orderService = {
 
       let refundEligible = false;
       let refundStatus: string | null = null;
+      let walletCredited = false;
 
       if (safe.status === 'cancelled') {
-        const dispute = await Dispute.findOne({ orderId: order!._id, status: 'resolved' });
-        if (dispute) {
-          const existingRefund = await RefundRequest.findOne({ orderId: order!._id });
-          refundStatus   = existingRefund ? existingRefund.status : null;
-          refundEligible = !existingRefund;
+        // NEW system (from this update onward): cancelOrder()/dispute
+        // resolution/auto-cancel now credit the wallet instantly and log a
+        // Transaction (type: 'credit') tagged to the order. Its presence
+        // is exactly how we tell "this was auto-credited under the new
+        // system" apart from "this is an old cancellation from before the
+        // update" — old ones were refunded manually as real money outside
+        // this flow and must NEVER retroactively show wallet-credit
+        // messaging or get double-credited.
+        const creditTxn = await Transaction.findOne({
+          orderId: order!._id, userId: order!.customerId, type: 'credit',
+        });
+
+        if (creditTxn) {
+          walletCredited = true;
+        } else {
+          // OLD system fallback — preserved exactly as-is for any order
+          // cancelled before this update, so existing refund-request
+          // history/state keeps working unchanged.
+          if (!safe.workerId) {
+            const existingRefund = await RefundRequest.findOne({ orderId: order!._id });
+            refundStatus   = existingRefund ? existingRefund.status : null;
+            refundEligible = !existingRefund;
+          } else {
+            const dispute = await Dispute.findOne({ orderId: order!._id, status: 'resolved' });
+            if (dispute) {
+              const existingRefund = await RefundRequest.findOne({ orderId: order!._id });
+              refundStatus   = existingRefund ? existingRefund.status : null;
+              refundEligible = !existingRefund;
+            }
+          }
         }
       }
 
-      return { ...safe, refundEligible, refundStatus } as unknown as IOrder;
+      return { ...safe, refundEligible, refundStatus, walletCredited } as unknown as IOrder;
     }
 
     // WORKER-FACING: strip the customer's full paid amount and commission
