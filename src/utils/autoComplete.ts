@@ -111,10 +111,10 @@ async function autoCancelUnresponsiveWorker(now: Date): Promise<void> {
       `Reversed: Order #${orderRef} (worker unresponsive to code request)`
     );
 
-    // A resolved Dispute record is what makes an order refund-eligible in
-    // refund.service.ts — creating one here (instead of requiring the
-    // customer to manually file one) means the customer can request their
-    // refund immediately, with no extra step needed on their end.
+    // Kept as an audit-trail record so admin can see why this was
+    // auto-cancelled in the Disputes history — refund eligibility itself
+    // is now handled by the instant wallet credit below, not by this
+    // record's existence.
     await Dispute.create({
       orderId: order._id,
       customerId: order.customerId,
@@ -126,6 +126,13 @@ async function autoCancelUnresponsiveWorker(now: Date): Promise<void> {
       resolvedAt: now,
     });
 
+    // NEW: instant wallet credit for the customer, replacing the old
+    // "go request a UPI refund and wait for admin" flow.
+    await walletService.creditRefund(
+      customerId, order.amount, order._id,
+      `Refund: Order #${orderRef} (worker unresponsive to code request)`
+    );
+
     await Promise.all([
       Notification.create({
         userId: workerId,
@@ -135,8 +142,8 @@ async function autoCancelUnresponsiveWorker(now: Date): Promise<void> {
       }),
       Notification.create({
         userId: customerId,
-        title:  'Order Cancelled — Refund Available',
-        message: `The worker didn't respond to your verification code request, so Order #${orderRef} (₹${order.amount}) has been cancelled. You can now request a refund from the order page.`,
+        title:  '💰 Refund Credited',
+        message: `The worker didn't respond to your verification code request, so Order #${orderRef} was cancelled. ₹${order.amount} has been credited to your Mailzeon wallet — use it on your next order.`,
         type: 'dispute', orderId: order._id, isRead: false, createdAt: now,
       }),
     ]);
