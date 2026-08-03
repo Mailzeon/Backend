@@ -33,4 +33,16 @@ router.put('/profile', async (req: Request, res: Response) => {
 // field name the frontend sends (see ProfileImageUploader.tsx).
 router.post('/profile-image', upload.single('image'), uploadProfileImage);
 
+// New: pinged by AppInstallDetector.tsx when the frontend detects it's
+// running in standalone/installed mode. Cheap, no-op-safe to call
+// repeatedly (every app open), used purely to track who's actually using
+// the installed PWA vs. the plain browser.
+router.post('/mark-installed', async (req: Request, res: Response) => {
+  await User.findByIdAndUpdate(req.user!._id, {
+    hasInstalledApp: true,
+    lastSeenAsInstalledApp: new Date(),
+  });
+  sendSuccess(res, 'Noted.');
+});
+
 export default router;
