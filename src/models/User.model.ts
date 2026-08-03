@@ -69,6 +69,20 @@ const UserSchema = new Schema<IUser>(
 
     profileImage: String,
 
+    // NEW — PWA install detection. Set when the frontend detects it's
+    // running in standalone/installed mode (display-mode: standalone,
+    // matched via window.matchMedia — see AppInstallDetector.tsx) and
+    // pings the backend. Not 100% reliable (no signal if someone installs
+    // but never re-opens, or uninstalls) but accurate for "who is
+    // currently using the installed app".
+    hasInstalledApp: {
+      type: Boolean,
+      default: false,
+    },
+    lastSeenAsInstalledApp: {
+      type: Date,
+    },
+
     // ── Forgot / reset password ─────────────────────────────────────────────
     // We store a SHA-256 hash of the reset token (never the raw token) so that
     // even if the database is compromised, the token itself can't be reused —
