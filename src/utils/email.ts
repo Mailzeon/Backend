@@ -89,3 +89,29 @@ export const sendPasswordResetEmail = async (to: string, rawToken: string): Prom
     `,
   });
 };
+
+/**
+ * NEW: mirrors every in-app notification to the user's registered email —
+ * called from notificationService.create() so every notification, from any
+ * trigger in the app, also lands in their inbox, not just the bell icon.
+ */
+export const sendNotificationEmail = async (to: string, title: string, message: string): Promise<void> => {
+  await sendEmail({
+    to,
+    subject: title || 'New notification from Mailzeon',
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px;">
+        <h2 style="color: #111; margin-bottom: 4px;">${title}</h2>
+        <p style="color: #444; font-size: 15px; line-height: 1.5;">${message}</p>
+        <a href="${env.FRONTEND_URL}/login"
+           style="display: inline-block; margin: 20px 0; padding: 10px 20px; background: #7c3aed;
+                  color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px;">
+          Open Mailzeon
+        </a>
+        <p style="color: #aaa; font-size: 12px; margin-top: 16px;">
+          You're receiving this because it happened on your Mailzeon account.
+        </p>
+      </div>
+    `,
+  });
+};
