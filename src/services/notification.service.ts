@@ -1,6 +1,8 @@
 import { Notification } from '../models/Notification.model';
+import { User } from '../models/User.model';
 import { emitToUser, EVENTS } from '../socket/events';
 import { sendPushToUser } from '../utils/webPush';
+import { sendNotificationEmail } from '../utils/email';
 import { NotificationType } from '../types';
 import { Types } from 'mongoose';
 
@@ -29,6 +31,18 @@ export const notificationService = {
       message: input.message,
       orderId: input.orderId?.toString(),
     }).catch(err => console.error('[Notification] Push send failed:', err));
+
+    // NEW: mirror every notification to the user's registered email too.
+    // Fire-and-forget for the same reason as the push call above — an
+    // email failure (or Brevo's 300/day free-tier limit being hit) must
+    // never break the actual notification/DB write.
+    User.findById(input.userId).select('email').lean()
+      .then((user) => {
+        if (user?.email) {
+          return sendNotificationEmail(user.email, input.title, input.message);
+        }
+      })
+      .catch(err => console.error('[Notification] Email send failed:', err));
 
     return notif;
   },
