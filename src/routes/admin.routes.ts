@@ -316,6 +316,13 @@ router.get('/disputes', async (_req: Request, res: Response) => {
   sendSuccess(res, 'Disputes fetched.', disputes);
 });
 
+// Full context for one dispute (order + credentials + customer/worker
+// history) — fetched only when the admin opens the Review modal.
+router.get('/disputes/:id/detail', async (req: Request, res: Response) => {
+  const detail = await disputeService.getById(req.params.id);
+  sendSuccess(res, 'Dispute detail fetched.', detail);
+});
+
 router.patch('/disputes/:id', async (req: Request, res: Response) => {
   const { status, adminNote } = req.body;
   if (!['resolved', 'rejected'].includes(status)) {
