@@ -250,7 +250,7 @@ router.get('/users/:id/detail', async (req: Request, res: Response) => {
   const isWorker    = user.role === 'worker';
   const partyFilter = isWorker ? { workerId: user._id } : { customerId: user._id };
 
-  const [orders, disputes, workerLevel, wallet, recentRatings] = await Promise.all([
+  const [orders, disputes, workerLevel, wallet, recentTransactions, recentRatings] = await Promise.all([
     Order.find(partyFilter)
       .select('-credentials')
       .populate('customerId workerId', 'name email')
@@ -261,7 +261,11 @@ router.get('/users/:id/detail', async (req: Request, res: Response) => {
       .sort({ createdAt: -1 })
       .limit(25),
     isWorker ? WorkerLevelModel.findOne({ workerId: user._id }) : null,
-    isWorker ? Wallet.findOne({ userId: user._id }) : null,
+    // FIX: was worker-only before — customers have wallets too now
+    // (refund credits, and wallet recharge via Cashfree), so admin
+    // couldn't see a customer's wallet balance at all previously.
+    Wallet.findOne({ userId: user._id }),
+    Transaction.find({ userId: user._id }).sort({ createdAt: -1 }).limit(20),
     isWorker
       ? Rating.find({ workerId: user._id })
           .populate('customerId', 'name')
@@ -276,8 +280,27 @@ router.get('/users/:id/detail', async (req: Request, res: Response) => {
     disputes,
     workerLevel,
     wallet,
+    recentTransactions,
     recentRatings,
   });
+});
+
+// ── Wallet transactions (admin-wide monitoring) ─────────────────────────
+// Lets admin browse recharges, refunds, earnings, withdrawals across every
+// user without needing to open each user's detail page individually.
+// Optional ?type=recharge|credit|debit|withdrawal to filter.
+router.get('/wallet-transactions', async (req: Request, res: Response) => {
+  const { type } = req.query;
+  const filter: Record<string, unknown> = {};
+  if (type && typeof type === 'string') filter.type = type;
+
+  const transactions = await Transaction.find(filter)
+    .populate('userId', 'name email role')
+    .populate('orderId', 'serviceName')
+    .sort({ createdAt: -1 })
+    .limit(200);
+
+  sendSuccess(res, 'Wallet transactions fetched.', transactions);
 });
 
 // ── Withdrawals ───────────────────────────────────────────────────────────────
