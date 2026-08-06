@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { paymentService } from '../services/payment.service';
+import { walletService } from '../services/wallet.service';
 import { Order } from '../models/Order.model';
 import { sendSuccess, sendError } from '../utils/response';
 
@@ -47,14 +48,26 @@ export const handleWebhook = async (req: Request, res: Response): Promise<void> 
   }
 
   try {
+    // Wallet recharges use a `WALLET-<transactionId>` order_id — route them
+    // to the wallet service instead of the regular order-payment flow.
+    const isWalletRecharge = typeof orderId === 'string' && orderId.startsWith('WALLET-');
+
     if (payload.type === 'PAYMENT_SUCCESS_WEBHOOK' && paymentStatus === 'SUCCESS') {
-      await paymentService.confirmPaymentSuccess(orderId);
+      if (isWalletRecharge) {
+        await walletService.confirmRechargeSuccess(orderId);
+      } else {
+        await paymentService.confirmPaymentSuccess(orderId);
+      }
     } else if (
       paymentStatus === 'FAILED' ||
       payload.type === 'PAYMENT_FAILED_WEBHOOK' ||
       payload.type === 'PAYMENT_USER_DROPPED_WEBHOOK'
     ) {
-      await paymentService.markPaymentFailed(orderId);
+      if (isWalletRecharge) {
+        await walletService.markRechargeFailed(orderId);
+      } else {
+        await paymentService.markPaymentFailed(orderId);
+      }
     }
     // Any other webhook type (e.g. refund webhooks we don't use) is silently ignored.
   } catch (err) {
@@ -103,4 +116,39 @@ export const verifyPayment = async (req: Request, res: Response): Promise<void> 
 
   const updated = await Order.findById(orderId);
   sendSuccess(res, 'Payment status checked.', { status: updated!.status });
+};
+
+/**
+ * Same idea as verifyPayment above, but for wallet recharges — called by
+ * the frontend right after the customer is redirected back from Cashfree
+ * to /customer/wallet?payment=return&txn=<transactionId>.
+ */
+export const verifyWalletRecharge = async (req: Request, res: Response): Promise<void> => {
+  const { transactionId } = req.params;
+
+  const txn = await walletService.getRechargeTransaction(transactionId, req.user!._id.toString());
+  if (!txn) { sendError(res, 'Recharge not found.', 404); return; }
+
+  if (txn.status !== 'pending') {
+    // Webhook (or an earlier verify call) already resolved this
+    sendSuccess(res, 'Recharge already processed.', { status: txn.status });
+    return;
+  }
+
+  if (!txn.cashfreeOrderId) {
+    sendError(res, 'Payment was never initiated for this recharge.', 400);
+    return;
+  }
+
+  const cfStatus = await paymentService.getCashfreeOrderStatus(txn.cashfreeOrderId);
+
+  if (cfStatus === 'PAID') {
+    await walletService.confirmRechargeSuccess(txn.cashfreeOrderId);
+  } else if (cfStatus === 'EXPIRED' || cfStatus === 'TERMINATED') {
+    await walletService.markRechargeFailed(txn.cashfreeOrderId);
+  }
+  // If still 'ACTIVE', leave as pending — frontend can show a "still waiting" state.
+
+  const updatedTxn = await walletService.getRechargeTransaction(transactionId, req.user!._id.toString());
+  sendSuccess(res, 'Recharge status checked.', { status: updatedTxn!.status });
 };
