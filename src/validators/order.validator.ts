@@ -68,11 +68,12 @@ export const submitCredentialsSchema = z.object({
     .optional(),
 });
 
-export const submitCodeSchema = z.object({
-  code: z.string()
+export const submitNumberSchema = z.object({
+  number: z.string()
     .trim()
-    .min(1, 'Verification code is required')
-    .max(20, 'Verification code is too long'),
+    .min(1, 'Verification number is required')
+    .max(5, 'That doesn\'t look like a valid verification number')
+    .regex(/^\d+$/, 'Verification number should contain digits only'),
 });
 
 export const reportProblemSchema = z.object({
