@@ -339,74 +339,60 @@ export const orderService = {
     return order!;
   },
 
-  // ── Customer: request verification code ──────────────────────────────────
-  async requestVerificationCode(orderId: string, customerId: string): Promise<IOrder> {
+  // ── Customer: submit the verification number they see on their Google
+  //    "new device" login screen. Replaces the old "request code" step —
+  //    the customer submits the number directly, no separate request needed.
+  //    Also used to RESUBMIT if the previous number expired (Google numbers
+  //    are only valid ~1 minute) — that's why it also accepts the order
+  //    already being in 'verification_pending'.
+  async submitVerificationNumber(orderId: string, customerId: string, number: string): Promise<IOrder> {
     const order = await Order.findOne({
-      _id: orderId, customerId, status: 'credentials_submitted',
+      _id: orderId, customerId,
+      status: { $in: ['credentials_submitted', 'verification_pending'] },
     });
-    if (!order) throwErr('Order must be in "credentials_submitted" state to request a code.', 400);
+    if (!order) throwErr('Order must have credentials submitted to send a verification number.', 400);
 
     order!.status = 'verification_pending';
+    order!.verificationCode = number.trim();
+    order!.verificationConfirmed = false;
     await order!.save();
 
     const workerId = order!.workerId!.toString();
     await notificationService.create({
       userId:  workerId,
-      title:   '⚡ Verification Code Requested',
-      message: 'The customer needs a verification code. Please enter it now.',
+      title:   '🔢 Verification Number Received',
+      message: `Select "${number.trim()}" on your Google prompt for this account, then confirm in the app.`,
       type:    'verification',
       orderId: order!._id,
     });
 
-    emitToUser(workerId, EVENTS.CODE_REQUESTED, { orderId });
+    emitToUser(workerId, EVENTS.NUMBER_SUBMITTED, { orderId, number: number.trim() });
     return order!;
   },
 
-  // ── Worker: submit verification code ─────────────────────────────────────
-  async submitVerificationCode(orderId: string, workerId: string, code: string): Promise<IOrder> {
-    const order = await Order.findOne({ _id: orderId, workerId, status: 'verification_pending' });
-    if (!order) throwErr('Order not found or not in verification state.', 400);
+  // ── Worker: confirm they selected the matching number on their own
+  //    logged-in device's Google prompt. No code is typed here — the app
+  //    is just relaying the customer's real-world confirmation status.
+  async confirmVerificationNumber(orderId: string, workerId: string): Promise<IOrder> {
+    const order = await Order.findOne({
+      _id: orderId, workerId, status: 'verification_pending', verificationCode: { $exists: true, $ne: null },
+    });
+    if (!order) throwErr('Order not found, not in verification state, or no number submitted yet.', 400);
 
-    order!.verificationCode = code.trim();
+    order!.verificationConfirmed = true;
     await order!.save();
 
     const customerId = order!.customerId.toString();
     await notificationService.create({
       userId:  customerId,
-      title:   '✅ Verification Code Received',
-      message: 'The worker has sent your verification code. Open your order to view it.',
+      title:   '✅ Worker Confirmed',
+      message: 'The worker selected your number on their device. Try logging in now.',
       type:    'verification',
       orderId: order!._id,
     });
 
-    emitToUser(customerId, EVENTS.CODE_RECEIVED, { orderId, code: code.trim() });
+    emitToUser(customerId, EVENTS.NUMBER_CONFIRMED, { orderId });
     return order!;
-  },
-
-  // ── Customer: request a NEW code ─────────────────────────────────────────
-  async requestNewCode(orderId: string, customerId: string): Promise<IOrder> {
-    const order = await Order.findOne({
-      _id: orderId,
-      customerId,
-      status: 'verification_pending',
-      workerId: { $ne: null },
-    });
-    if (!order) throwErr('Order not in verification state.', 400);
-
-    await Order.findByIdAndUpdate(orderId, { $unset: { verificationCode: 1 } });
-    order.verificationCode = undefined;
-
-    const workerId = order.workerId!.toString();
-    await notificationService.create({
-      userId:  workerId,
-      title:   '⚡ New Code Requested',
-      message: 'The previous code expired. Please provide a new verification code.',
-      type:    'verification',
-      orderId: order._id,
-    });
-
-    emitToUser(workerId, EVENTS.NEW_CODE_REQUESTED, { orderId });
-    return order;
   },
 
   // ── Customer: confirm successful login ────────────────────────────────────
