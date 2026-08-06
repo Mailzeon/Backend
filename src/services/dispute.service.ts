@@ -2,6 +2,8 @@ import { Dispute, IDispute } from '../models/Dispute.model';
 import { Order } from '../models/Order.model';
 import { User } from '../models/User.model';
 import { Notification } from '../models/Notification.model';
+import { Rating } from '../models/Rating.model';
+import { WorkerLevelModel } from '../models/WorkerLevel.model';
 import { walletService } from './wallet.service';
 import { workerLevelService } from './workerLevel.service';
 import { emitToUser, EVENTS } from '../socket/events';
@@ -45,6 +47,60 @@ export const disputeService = {
       .populate('customerId', 'name email')
       .populate('workerId', 'name email')
       .sort({ createdAt: -1 });
+  },
+
+  // ── Admin: full context for one dispute — everything needed to judge it ───
+  // without manually digging through the database. Deliberately a separate
+  // (heavier) call from getAll() — the list view stays cheap, this only
+  // runs when the admin actually opens the Review modal for one dispute.
+  async getById(id: string) {
+    const dispute = await Dispute.findById(id)
+      .populate('orderId')   // full order doc (credentials, verificationCode, timestamps etc.)
+      .populate('customerId', 'name email phone createdAt')
+      .populate('workerId', 'name email phone level isOnline createdAt');
+    if (!dispute) throwErr('Dispute not found.', 404);
+
+    const order = dispute!.orderId as any;
+    const customer = dispute!.customerId as any;
+    const worker = dispute!.workerId as any;
+
+    // Behaviour context — helps admin spot a customer who disputes every
+    // order to farm free refunds, or a worker with a repeat pattern of
+    // upheld complaints, rather than judging this one dispute in isolation.
+    const [
+      customerTotalOrders, customerTotalDisputesRaised, customerDisputesUpheld,
+      workerLevelDoc, workerCompletedOrders, workerDisputesAgainst, workerDisputesUpheldAgainst,
+      recentWorkerRatings,
+    ] = await Promise.all([
+      Order.countDocuments({ customerId: customer._id }),
+      Dispute.countDocuments({ customerId: customer._id }),
+      Dispute.countDocuments({ customerId: customer._id, status: 'resolved' }),
+      WorkerLevelModel.findOne({ workerId: worker._id }).lean(),
+      Order.countDocuments({ workerId: worker._id, status: 'completed' }),
+      Dispute.countDocuments({ workerId: worker._id }),
+      Dispute.countDocuments({ workerId: worker._id, status: 'resolved' }),
+      Rating.find({ workerId: worker._id }).sort({ createdAt: -1 }).limit(5).select('rating createdAt orderId'),
+    ]);
+
+    return {
+      dispute,
+      order,
+      customer: {
+        ...customer.toObject(),
+        totalOrders: customerTotalOrders,
+        totalDisputesRaised: customerTotalDisputesRaised,
+        disputesUpheld: customerDisputesUpheld,
+      },
+      worker: {
+        ...worker.toObject(),
+        completedOrders: workerCompletedOrders,
+        totalDisputesAgainst: workerDisputesAgainst,
+        disputesUpheldAgainst: workerDisputesUpheldAgainst,
+        averageRating: workerLevelDoc?.averageRating ?? 0,
+        successRate: workerLevelDoc?.successRate ?? 100,
+        recentRatings: recentWorkerRatings,
+      },
+    };
   },
 
   async getMyDisputes(customerId: string): Promise<IDispute[]> {
