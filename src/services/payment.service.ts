@@ -85,6 +85,60 @@ export const paymentService = {
     };
   },
 
+  // ── Create a Cashfree order for a WALLET RECHARGE ──────────────────────
+  // Same idea as createCashfreeOrder above, but for topping up the wallet
+  // instead of paying for an order — kept as a separate function (rather
+  // than branching the one above) so the existing, working order-payment
+  // path is never touched. Uses `WALLET-<transactionId>` as the Cashfree
+  // order_id so the webhook can tell recharges apart from regular orders.
+  async createWalletRechargeOrder(
+    transactionId: string,
+    amount: number,
+    userId: string,
+    userEmail: string,
+    userPhone: string
+  ): Promise<CreateCashfreeOrderResult> {
+    const cashfreeOrderId = `WALLET-${transactionId}`;
+    const returnUrl = `${env.FRONTEND_URL}/customer/wallet?payment=return&txn=${transactionId}`;
+    const notifyUrl = `${env.BACKEND_URL}/api/payments/webhook`;
+
+    const res = await fetch(`${CASHFREE_BASE_URL}/orders`, {
+      method: 'POST',
+      headers: cashfreeHeaders(),
+      body: JSON.stringify({
+        order_id: cashfreeOrderId,
+        order_amount: amount,
+        order_currency: 'INR',
+        customer_details: {
+          customer_id: userId,
+          customer_email: userEmail,
+          customer_phone: userPhone,
+        },
+        order_meta: {
+          return_url: returnUrl,
+          notify_url: notifyUrl,
+        },
+      }),
+    });
+
+    const data = (await res.json()) as CashfreeCreateOrderResponse;
+
+    if (!res.ok) {
+      console.error('[Cashfree] Create wallet recharge order failed:', JSON.stringify(data));
+      throwErr(data?.message || 'Failed to initiate payment. Please try again.', 502);
+    }
+
+    if (!data.payment_session_id) {
+      console.error('[Cashfree] No payment_session_id in wallet recharge response:', JSON.stringify(data));
+      throwErr('Payment gateway did not return a valid session. Please try again.', 502);
+    }
+
+    return {
+      paymentSessionId: data.payment_session_id,
+      cashfreeOrderId: data.order_id ?? cashfreeOrderId,
+    };
+  },
+
   // ── Verify webhook signature (HMAC-SHA256, base64) ────────────────────────
   // Cashfree signs: base64(HMAC-SHA256(secretKey, timestamp + rawBody))
   // sent as the `x-webhook-signature` header, alongside `x-webhook-timestamp`.
