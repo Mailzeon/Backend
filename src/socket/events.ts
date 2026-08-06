@@ -12,10 +12,9 @@ export const EVENTS = {
   ORDER_COMPLETED:   'order-completed',   // → customer + worker rooms
   ORDER_CANCELLED:   'order-cancelled',   // → customer's room
 
-  // Verification code flow
-  CODE_REQUESTED:    'code-requested',     // → worker's room
-  CODE_RECEIVED:     'code-received',      // → customer's room
-  NEW_CODE_REQUESTED:'new-code-requested', // → worker's room
+  // Verification number flow (Google "new device login" style)
+  NUMBER_SUBMITTED:  'number-submitted',   // → worker's room (customer submitted the number they see)
+  NUMBER_CONFIRMED:  'number-confirmed',   // → customer's room (worker confirmed selecting it)
 
   // Wallet & admin
   WITHDRAWAL_DONE:   'withdrawal-done',    // → worker's room
