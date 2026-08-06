@@ -54,7 +54,17 @@ export interface IOrder extends Document {
     notes?: string;
   };
 
+  // The number the customer sees on their new-device Google login screen.
+  // Submitted BY the customer (not the worker) — see order.service.ts
+  // submitVerificationNumber(). The worker reads this number, selects the
+  // matching option on their own already-logged-in device's Google prompt,
+  // then confirms below.
   verificationCode?: string;
+
+  // True once the worker has selected the matching number on their device
+  // and tapped "Confirm" in the app. Lets the customer's UI show "worker
+  // confirmed — try logging in now" instead of a raw code to type in.
+  verificationConfirmed?: boolean;
 
   acceptedAt?: Date;
   timerExpiresAt?: Date;
@@ -156,6 +166,7 @@ const OrderSchema = new Schema<IOrder>(
     },
 
     verificationCode: String,
+    verificationConfirmed: { type: Boolean, default: false },
     acceptedAt: Date,
     timerExpiresAt: Date,
     credentialsSubmittedAt: Date,
