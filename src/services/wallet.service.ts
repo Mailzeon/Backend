@@ -1,6 +1,7 @@
 import { Wallet } from '../models/Wallet.model';
 import { Transaction } from '../models/Transaction.model';
 import { Types } from 'mongoose';
+import { notificationService } from './notification.service';
 
 export const walletService = {
   /** Get wallet, creating it with zero balance if it doesn't exist */
@@ -101,5 +102,71 @@ export const walletService = {
     await walletService.getOrCreate(userId);
     await Wallet.findOneAndUpdate({ userId }, { $inc: { balance: amount } });
     await Transaction.create({ userId, orderId, type: 'credit', amount, status: 'completed', description });
+  },
+
+  // ── Add Funds via Cashfree ─────────────────────────────────────────────
+  // Step 1: create a 'pending' recharge Transaction BEFORE talking to
+  // Cashfree — its own _id becomes the basis for the order_id we send them
+  // (`WALLET-<transactionId>`), which is how the webhook later finds its
+  // way back here. Nothing is credited to the wallet yet.
+  async initiateRecharge(userId: string, amount: number) {
+    return Transaction.create({
+      userId, type: 'recharge', amount, status: 'pending',
+      description: `Wallet recharge — ₹${amount}`,
+    });
+  },
+
+  // Step 2 (called right after Cashfree confirms the order was created):
+  // stamp the transaction with the exact cashfreeOrderId so the webhook
+  // can look it up.
+  async attachCashfreeOrderId(transactionId: string, cashfreeOrderId: string) {
+    await Transaction.findByIdAndUpdate(transactionId, { cashfreeOrderId });
+  },
+
+  // Step 3: webhook (or verify-on-return fallback) calls this once Cashfree
+  // confirms payment succeeded. The `status: 'pending'` filter makes this
+  // safe to call twice (webhook retries, webhook + verify both firing) —
+  // the second call simply finds nothing to update and no-ops, so the
+  // wallet is never double-credited.
+  async confirmRechargeSuccess(cashfreeOrderId: string): Promise<void> {
+    const txn = await Transaction.findOneAndUpdate(
+      { cashfreeOrderId, type: 'recharge', status: 'pending' },
+      { status: 'completed' },
+      { new: true }
+    );
+    if (!txn) return; // already processed, or not a recharge — no-op
+
+    await walletService.getOrCreate(txn.userId);
+    await Wallet.findOneAndUpdate({ userId: txn.userId }, { $inc: { balance: txn.amount } });
+
+    await notificationService.create({
+      userId:  txn.userId,
+      title:   '💰 Wallet Recharged!',
+      message: `₹${txn.amount} has been added to your wallet.`,
+      type:    'wallet',
+    });
+  },
+
+  async markRechargeFailed(cashfreeOrderId: string): Promise<void> {
+    await Transaction.findOneAndUpdate(
+      { cashfreeOrderId, type: 'recharge', status: 'pending' },
+      { status: 'failed' }
+    );
+  },
+
+  // Used when Cashfree order creation itself throws (before a
+  // cashfreeOrderId was ever attached) — marks the pending recharge failed
+  // by its own _id instead of relying on a cashfreeOrderId lookup.
+  async markRechargeInitiationFailed(transactionId: string): Promise<void> {
+    await Transaction.findOneAndUpdate(
+      { _id: transactionId, type: 'recharge', status: 'pending' },
+      { status: 'failed' }
+    );
+  },
+
+  // For the frontend's verify-on-return fallback — just needs to know
+  // whether this recharge belongs to the requesting user and its cashfreeOrderId.
+  async getRechargeTransaction(transactionId: string, userId: string) {
+    return Transaction.findOne({ _id: transactionId, userId, type: 'recharge' });
   },
 };
