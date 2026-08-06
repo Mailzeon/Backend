@@ -21,8 +21,8 @@ export type WithdrawalStatus  = 'pending' | 'approved' | 'rejected' | 'completed
 export type PaymentMethod     = 'upi' | 'bank';
 export type DisputeReason     = 'wrong_password' | 'unable_to_login' | 'account_issue' | 'other';
 export type DisputeStatus     = 'open' | 'resolved' | 'rejected';
-export type TransactionType   = 'credit' | 'debit' | 'withdrawal';
-export type NotificationType  = 'order' | 'withdrawal' | 'verification' | 'dispute' | 'system';
+export type TransactionType   = 'credit' | 'debit' | 'withdrawal' | 'recharge';
+export type NotificationType  = 'order' | 'withdrawal' | 'verification' | 'dispute' | 'system' | 'wallet';
 
 // ─── Document Interfaces ──────────────────────────────────────────────────────
 
