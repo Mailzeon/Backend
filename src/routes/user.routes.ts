@@ -6,6 +6,7 @@ import { uploadProfileImage } from '../controllers/user.controller';
 import { Request, Response } from 'express';
 import { User } from '../models/User.model';
 import { sendSuccess, sendError } from '../utils/response';
+import { emitToAdmins, EVENTS } from '../socket/events';
 
 const router = Router();
 router.use(authenticate);
@@ -16,6 +17,13 @@ router.patch('/status', requireRole('worker'), async (req: Request, res: Respons
   if (typeof isOnline !== 'boolean') { sendError(res, 'isOnline must be boolean.', 400); return; }
   const user = await User.findByIdAndUpdate(req.user!._id, { isOnline }, { new: true });
   sendSuccess(res, `You are now ${isOnline ? 'online' : 'offline'}.`, user);
+
+  // Push the fresh count to every admin currently viewing the dashboard —
+  // querying the true count (rather than emitting +1/-1) means the admin's
+  // number is always exactly correct even if events arrive out of order or
+  // an admin's dashboard was already open before this toggle happened.
+  const onlineWorkers = await User.countDocuments({ role: 'worker', isOnline: true });
+  emitToAdmins(EVENTS.WORKER_ONLINE_COUNT_CHANGED, { onlineWorkers });
 });
 
 // Update profile / payment details
