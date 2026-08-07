@@ -18,6 +18,7 @@ import { withdrawalService } from '../services/withdrawal.service';
 import { refundService }     from '../services/refund.service';
 import { disputeService }    from '../services/dispute.service';
 import { notificationService } from '../services/notification.service';
+import { runAutoCompleteJob } from '../utils/autoComplete';
 import { invalidateSettingsCache } from '../services/order.service';
 import { emitToUser, EVENTS }  from '../socket/events';
 import { sendSuccess, sendError } from '../utils/response';
@@ -367,6 +368,15 @@ router.get('/leaderboard', async (_req: Request, res: Response) => {
     .sort({ completedOrders: -1, averageRating: -1, _id: 1 })
     .limit(10);
   sendSuccess(res, 'Leaderboard fetched.', top);
+});
+
+// Manually run the auto-complete/auto-cancel sweep right now instead of
+// waiting for the next 5-minute interval — useful right after fixing a bug
+// that was silently blocking it, or any time an admin wants to confirm
+// stuck orders clear immediately rather than waiting.
+router.post('/run-auto-complete', async (_req: Request, res: Response) => {
+  await runAutoCompleteJob();
+  sendSuccess(res, 'Auto-complete sweep finished. Check Orders to confirm stuck ones cleared.', {});
 });
 
 // ── Danger zone: reset all test/activity data ─────────────────────────────────
