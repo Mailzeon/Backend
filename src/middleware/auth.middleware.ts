@@ -33,6 +33,10 @@ export const authenticate = async (
       sendError(res, 'User no longer exists.', 401);
       return;
     }
+    if (user.isDeleted) {
+      sendError(res, 'This account has been deleted.', 401);
+      return;
+    }
 
     req.user = user;
     next();
