@@ -44,7 +44,25 @@ export interface IOrder extends Document {
   walletAmountApplied: number;
 
   // The exact email address the customer wants created for this order.
+  // Only set when emailType === 'custom'. For 'random' orders this is left
+  // undefined on purpose — see `domain` and `emailType` below — the worker
+  // is free to submit ANY existing or newly-created address on the right
+  // domain, not one specific pre-generated string.
   requestedEmail?: string;
+
+  // NEW — always stored regardless of emailType, since 'random' orders no
+  // longer bake the domain into requestedEmail. Used to (a) show the
+  // worker which provider to use, and (b) validate their submitted
+  // credentials.email actually ends in @domain (see order.service.ts
+  // submitCredentials()).
+  domain: string;
+
+  // NEW — 'custom': worker must create requestedEmail exactly.
+  // 'random': worker submits ANY email on `domain` (old or newly created) —
+  // this is what actually makes "random" behave like a random pick from
+  // the worker's own available accounts, instead of forcing them to create
+  // one specific auto-generated address every time.
+  emailType: 'random' | 'custom';
 
   // Submitted by worker — NEVER exposed to the worker's own earnings view,
   // shown to customer once submitted (see order.service.ts getOrder).
@@ -156,6 +174,20 @@ const OrderSchema = new Schema<IOrder>(
       type: String,
       trim: true,
       lowercase: true,
+      // Was `required: true` — no longer, since 'random' orders
+      // intentionally leave this unset (see IOrder interface comment above).
+    },
+
+    domain: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      required: true,
+    },
+
+    emailType: {
+      type: String,
+      enum: ['random', 'custom'],
       required: true,
     },
 
