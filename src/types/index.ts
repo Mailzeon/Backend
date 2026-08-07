@@ -52,6 +52,8 @@ export interface IUser extends Document {
   // explicitly requested with .select('+resetPasswordToken +resetPasswordExpires')
   resetPasswordToken?: string;
   resetPasswordExpires?: Date;
+  isDeleted?: boolean;
+  deletedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
   comparePassword(candidatePassword: string): Promise<boolean>;
