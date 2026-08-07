@@ -96,6 +96,24 @@ const UserSchema = new Schema<IUser>(
       type: Date,
       select: false,
     },
+
+    // ── Soft delete ──────────────────────────────────────────────────────
+    // Deleting an account never hard-deletes the User document — every
+    // Order/Dispute/Transaction/Rating/Notification elsewhere in the app
+    // references this user by ObjectId, and a hard delete would leave all
+    // of that history pointing at nothing (breaking every populate('name
+    // email') call across the app, including for the OTHER party in an
+    // order who has every right to still see it). Soft-deleting keeps the
+    // document resolvable — name/email get scrubbed below so their old
+    // history displays "Deleted User" automatically wherever it's shown,
+    // with no special-casing needed anywhere else in the codebase.
+    isDeleted: {
+      type: Boolean,
+      default: false,
+    },
+    deletedAt: {
+      type: Date,
+    },
   },
   { timestamps: true }
 );
