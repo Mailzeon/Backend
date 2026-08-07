@@ -21,6 +21,8 @@ import { notificationService } from '../services/notification.service';
 import { runAutoCompleteJob } from '../utils/autoComplete';
 import { invalidateSettingsCache } from '../services/order.service';
 import { emitToUser, EVENTS }  from '../socket/events';
+import { computeLiveOnlineWorkerCount } from '../socket/socket';
+import { userService } from '../services/user.service';
 import { sendSuccess, sendError } from '../utils/response';
 import { Request, Response }  from 'express';
 
@@ -37,9 +39,12 @@ router.get('/stats', async (_req: Request, res: Response) => {
     pendingOrders,  completedOrders, totalOrders,
     pendingWithdrawals, pendingRefunds, openDisputes, todayOrders,
   ] = await Promise.all([
-    User.countDocuments({ role: 'customer' }),
-    User.countDocuments({ role: 'worker' }),
-    User.countDocuments({ role: 'worker', isOnline: true }),
+    User.countDocuments({ role: 'customer', isDeleted: { $ne: true } }),
+    User.countDocuments({ role: 'worker', isDeleted: { $ne: true } }),
+    // Live count (preference AND actually connected right now) — same
+    // logic the real-time socket push uses, so the number is already
+    // correct on first page load, not just after the next toggle/reconnect.
+    computeLiveOnlineWorkerCount(),
     Order.countDocuments({ status: 'pending' }),
     Order.countDocuments({ status: 'completed' }),
     Order.countDocuments(),
@@ -284,6 +289,30 @@ router.get('/users/:id/detail', async (req: Request, res: Response) => {
     recentTransactions,
     recentRatings,
   });
+});
+
+// Admin: delete any user's account (soft delete — see user.service.ts).
+// Blocked if that account has an order actively in progress.
+router.delete('/users/:id', async (req: Request, res: Response) => {
+  await userService.deleteAccount(req.params.id);
+  sendSuccess(res, 'Account deleted.', {});
+});
+
+// Admin: wipe ONE user's history/activity data — orders, disputes,
+// transactions, notifications, ratings, wallet + worker level stats — while
+// leaving the account itself (and the other party's copy of anything
+// shared) alone... except that shared orders/disputes ARE deleted outright
+// here (unlike account deletion), so this genuinely removes them from the
+// other party's history too. Gated by a typed confirmation, same pattern
+// as the platform-wide Danger Zone reset.
+router.post('/users/:id/clear-data', async (req: Request, res: Response) => {
+  const { confirm } = req.body;
+  if (confirm !== 'CLEAR') {
+    sendError(res, 'Confirmation phrase did not match. Nothing was deleted.', 400);
+    return;
+  }
+  const result = await userService.clearUserData(req.params.id);
+  sendSuccess(res, "This user's data has been cleared. Their account was left untouched.", result);
 });
 
 // ── Wallet transactions (admin-wide monitoring) ─────────────────────────
