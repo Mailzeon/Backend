@@ -21,6 +21,9 @@ export const EVENTS = {
   WORKER_APPROVED:   'worker-approved',    // → worker's room
   WORKER_SUSPENDED:  'worker-suspended',   // → worker's room
 
+  // Live admin dashboard stats
+  WORKER_ONLINE_COUNT_CHANGED: 'worker-online-count-changed', // → admin room
+
   // Generic push notification
   NOTIFICATION:      'notification',       // → any user's room
 } as const;
@@ -40,4 +43,9 @@ export const emitToMarketplace = (event: string, data: unknown): void => {
 /** Broadcast to every connected client (use sparingly). */
 export const emitToAll = (event: string, data: unknown): void => {
   getIO().emit(event, data);
+};
+
+/** Send an event to every connected admin (see 'join-admin' in socket.ts). */
+export const emitToAdmins = (event: string, data: unknown): void => {
+  getIO().to('admin').emit(event, data);
 };
