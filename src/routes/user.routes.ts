@@ -6,7 +6,8 @@ import { uploadProfileImage } from '../controllers/user.controller';
 import { Request, Response } from 'express';
 import { User } from '../models/User.model';
 import { sendSuccess, sendError } from '../utils/response';
-import { emitToAdmins, EVENTS } from '../socket/events';
+import { pushLiveWorkerCount } from '../socket/socket';
+import { userService } from '../services/user.service';
 
 const router = Router();
 router.use(authenticate);
@@ -18,12 +19,9 @@ router.patch('/status', requireRole('worker'), async (req: Request, res: Respons
   const user = await User.findByIdAndUpdate(req.user!._id, { isOnline }, { new: true });
   sendSuccess(res, `You are now ${isOnline ? 'online' : 'offline'}.`, user);
 
-  // Push the fresh count to every admin currently viewing the dashboard —
-  // querying the true count (rather than emitting +1/-1) means the admin's
-  // number is always exactly correct even if events arrive out of order or
-  // an admin's dashboard was already open before this toggle happened.
-  const onlineWorkers = await User.countDocuments({ role: 'worker', isOnline: true });
-  emitToAdmins(EVENTS.WORKER_ONLINE_COUNT_CHANGED, { onlineWorkers });
+  // Push the fresh LIVE count (preference + actually connected right now)
+  // to every admin currently viewing the dashboard.
+  await pushLiveWorkerCount();
 });
 
 // Update profile / payment details
@@ -51,6 +49,13 @@ router.post('/mark-installed', async (req: Request, res: Response) => {
     lastSeenAsInstalledApp: new Date(),
   });
   sendSuccess(res, 'Noted.');
+});
+
+// Delete my own account — soft delete (see user.service.ts). Blocked if
+// there's still an order actively in progress. Not available to admins.
+router.delete('/me', requireRole('customer', 'worker'), async (req: Request, res: Response) => {
+  await userService.deleteAccount(req.user!._id.toString(), res);
+  sendSuccess(res, 'Your account has been deleted.', {});
 });
 
 export default router;
