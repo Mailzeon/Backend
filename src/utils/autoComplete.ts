@@ -43,54 +43,85 @@ export const runAutoCompleteJob = async (): Promise<void> => {
 // ── Customer never responded — pay the worker (unchanged behavior) ─────────────
 async function autoCompleteAbandonedByCustomer(now: Date): Promise<void> {
   const expiredOrders = await Order.find({
-    status:         'credentials_submitted',
     autoCompleteAt: { $lte: now },
+    $or: [
+      // Worker delivered credentials, customer never responded at all.
+      { status: 'credentials_submitted' },
+      // Worker delivered credentials AND already confirmed the Google
+      // verification number on their device — the ball is back in the
+      // CUSTOMER's court from that point on, same as credentials_submitted.
+      // (Added alongside the Gmail-verification flow rework — previously
+      // this state didn't exist, so autoCancelUnresponsiveWorker below
+      // would have wrongly blamed an already-responsive worker.)
+      { status: 'verification_pending', verificationConfirmed: true },
+    ],
   });
 
   if (expiredOrders.length === 0) return;
   console.log(`⚡ Auto-completing ${expiredOrders.length} abandoned order(s) (customer silent)...`);
 
   for (const order of expiredOrders) {
-    order.status      = 'completed';
-    order.completedAt = now;
-    await order.save();
+    // Each order gets its own try/catch — previously, if ANY single order in
+    // this batch threw (a bad wallet doc, a notification failure, whatever),
+    // the exception bubbled all the way up to runAutoCompleteJob()'s outer
+    // catch, which just logs and returns — meaning EVERY order after the
+    // failing one in this run was silently skipped. Worse: since the query
+    // re-runs from scratch every 5 minutes, the same first order fails again
+    // every time, permanently blocking the entire batch forever. This is
+    // almost certainly why orders sat in "Credentials Submitted" well past
+    // their 24-hour window — one stuck order was silently blocking all the
+    // ones behind it, indefinitely.
+    try {
+      order.status      = 'completed';
+      order.completedAt = now;
+      await order.save();
 
-    if (!order.workerId) continue;
-    const workerId   = order.workerId.toString();
-    const customerId = order.customerId.toString();
-    const orderRef   = order._id.toString().slice(-6).toUpperCase();
+      if (!order.workerId) continue;
+      const workerId   = order.workerId.toString();
+      const customerId = order.customerId.toString();
+      const orderRef   = order._id.toString().slice(-6).toUpperCase();
 
-    await walletService.releaseFromPending(
-      workerId, order.workerEarning, order._id,
-      `Auto-completed: Order #${orderRef}`
-    );
+      await walletService.releaseFromPending(
+        workerId, order.workerEarning, order._id,
+        `Auto-completed: Order #${orderRef}`
+      );
 
-    const workerNotif = await Notification.create({
-      userId: workerId,
-      title:  `₹${order.workerEarning} Credited (Auto-completed)`,
-      message: `Order #${orderRef} was auto-completed after 24 hours of no customer response. Earnings released.`,
-      type: 'order', orderId: order._id, isRead: false, createdAt: now,
-    });
-    emitToUser(workerId, EVENTS.ORDER_COMPLETED, { orderId: order._id, notification: workerNotif });
+      const workerNotif = await Notification.create({
+        userId: workerId,
+        title:  `₹${order.workerEarning} Credited (Auto-completed)`,
+        message: `Order #${orderRef} was auto-completed after 24 hours of no customer response. Earnings released.`,
+        type: 'order', orderId: order._id, isRead: false, createdAt: now,
+      });
+      emitToUser(workerId, EVENTS.ORDER_COMPLETED, { orderId: order._id, notification: workerNotif });
 
-    const customerNotif = await Notification.create({
-      userId: customerId,
-      title:  '✅ Order Auto-Completed',
-      message: 'Your order was automatically marked complete. We hope everything went well!',
-      type: 'order', orderId: order._id, isRead: false, createdAt: now,
-    });
-    emitToUser(customerId, EVENTS.ORDER_COMPLETED, { orderId: order._id, notification: customerNotif });
+      const customerNotif = await Notification.create({
+        userId: customerId,
+        title:  '✅ Order Auto-Completed',
+        message: 'Your order was automatically marked complete. We hope everything went well!',
+        type: 'order', orderId: order._id, isRead: false, createdAt: now,
+      });
+      emitToUser(customerId, EVENTS.ORDER_COMPLETED, { orderId: order._id, notification: customerNotif });
 
-    workerLevelService.recalculate(workerId).catch(err =>
-      console.error(`[AutoComplete][WorkerLevel] Failed for worker ${workerId}:`, err)
-    );
+      workerLevelService.recalculate(workerId).catch(err =>
+        console.error(`[AutoComplete][WorkerLevel] Failed for worker ${workerId}:`, err)
+      );
+    } catch (err) {
+      console.error(`[AutoComplete] Failed to auto-complete order ${order._id.toString()}:`, err);
+      // Falling through to the next loop iteration (default behavior once
+      // this catch finishes) is exactly what we want — one bad order no
+      // longer blocks the rest of the batch.
+    }
   }
 }
 
-// ── Worker never sent the verification code — cancel + refund the customer ─────
+// ── Worker never confirmed the customer's verification number — cancel + refund the customer ─────
 async function autoCancelUnresponsiveWorker(now: Date): Promise<void> {
   const stuckOrders = await Order.find({
     status:         'verification_pending',
+    // Only orders where the WORKER is genuinely the one holding things up —
+    // if they already confirmed the number, autoCompleteAbandonedByCustomer
+    // above handles it instead (worker gets paid, not cancelled).
+    verificationConfirmed: { $ne: true },
     autoCompleteAt: { $lte: now },
   });
 
@@ -98,67 +129,71 @@ async function autoCancelUnresponsiveWorker(now: Date): Promise<void> {
   console.log(`⚡ Auto-cancelling ${stuckOrders.length} order(s) (worker unresponsive to code request)...`);
 
   for (const order of stuckOrders) {
-    if (!order.workerId) continue;
-    const workerId   = order.workerId.toString();
-    const customerId = order.customerId.toString();
-    const orderRef   = order._id.toString().slice(-6).toUpperCase();
+    try {
+      if (!order.workerId) continue;
+      const workerId   = order.workerId.toString();
+      const customerId = order.customerId.toString();
+      const orderRef   = order._id.toString().slice(-6).toUpperCase();
 
-    order.status = 'cancelled';
-    await order.save();
+      order.status = 'cancelled';
+      await order.save();
 
-    // Reverse the worker's pending earnings — they never actually finished
-    // the job (customer's live verification code was never provided).
-    await walletService.reversePendingEarnings(
-      workerId, order.workerEarning, order._id,
-      `Reversed: Order #${orderRef} (worker unresponsive to code request)`
-    );
+      // Reverse the worker's pending earnings — they never actually finished
+      // the job (never confirmed the customer's verification number).
+      await walletService.reversePendingEarnings(
+        workerId, order.workerEarning, order._id,
+        `Reversed: Order #${orderRef} (worker unresponsive to verification number)`
+      );
 
-    // Kept as an audit-trail record so admin can see why this was
-    // auto-cancelled in the Disputes history — refund eligibility itself
-    // is now handled by the instant wallet credit below, not by this
-    // record's existence.
-    await Dispute.create({
-      orderId: order._id,
-      customerId: order.customerId,
-      workerId,
-      reason: 'other',
-      description: 'Auto-resolved by system: worker did not provide a verification code within 24 hours of the customer\'s request.',
-      status: 'resolved',
-      adminNote: 'Auto-resolved — worker unresponsive to verification code request.',
-      resolvedAt: now,
-    });
+      // Kept as an audit-trail record so admin can see why this was
+      // auto-cancelled in the Disputes history — refund eligibility itself
+      // is now handled by the instant wallet credit below, not by this
+      // record's existence.
+      await Dispute.create({
+        orderId: order._id,
+        customerId: order.customerId,
+        workerId,
+        reason: 'other',
+        description: 'Auto-resolved by system: worker did not confirm the customer\'s verification number within 24 hours.',
+        status: 'resolved',
+        adminNote: 'Auto-resolved — worker unresponsive to verification number.',
+        resolvedAt: now,
+      });
 
-    // NEW: instant wallet credit for the customer, replacing the old
-    // "go request a UPI refund and wait for admin" flow.
-    await walletService.creditRefund(
-      customerId, order.amount, order._id,
-      `Refund: Order #${orderRef} (worker unresponsive to code request)`
-    );
+      // NEW: instant wallet credit for the customer, replacing the old
+      // "go request a UPI refund and wait for admin" flow.
+      await walletService.creditRefund(
+        customerId, order.amount, order._id,
+        `Refund: Order #${orderRef} (worker unresponsive to verification number)`
+      );
 
-    await Promise.all([
-      Notification.create({
-        userId: workerId,
-        title:  'Order Cancelled — No Response',
-        message: `Order #${orderRef} was cancelled after you didn't respond to the customer's verification code request within 24 hours. Your pending earnings for this order have been reversed.`,
-        type: 'dispute', orderId: order._id, isRead: false, createdAt: now,
-      }),
-      Notification.create({
-        userId: customerId,
-        title:  '💰 Refund Credited',
-        message: `The worker didn't respond to your verification code request, so Order #${orderRef} was cancelled. ₹${order.amount} has been credited to your Mailzeon wallet — use it on your next order.`,
-        type: 'dispute', orderId: order._id, isRead: false, createdAt: now,
-      }),
-    ]);
+      await Promise.all([
+        Notification.create({
+          userId: workerId,
+          title:  'Order Cancelled — No Response',
+          message: `Order #${orderRef} was cancelled after you didn't confirm the customer's verification number within 24 hours. Your pending earnings for this order have been reversed.`,
+          type: 'dispute', orderId: order._id, isRead: false, createdAt: now,
+        }),
+        Notification.create({
+          userId: customerId,
+          title:  '💰 Refund Credited',
+          message: `The worker didn't confirm your verification number, so Order #${orderRef} was cancelled. ₹${order.amount} has been credited to your Mailzeon wallet — use it on your next order.`,
+          type: 'dispute', orderId: order._id, isRead: false, createdAt: now,
+        }),
+      ]);
 
-    emitToUser(workerId,   EVENTS.ORDER_CANCELLED, { orderId: order._id });
-    emitToUser(customerId, EVENTS.ORDER_CANCELLED, { orderId: order._id });
+      emitToUser(workerId,   EVENTS.ORDER_CANCELLED, { orderId: order._id });
+      emitToUser(customerId, EVENTS.ORDER_CANCELLED, { orderId: order._id });
 
-    // A worker going silent on a live customer request is worse for their
-    // reliability stats than a customer simply ghosting — recalculating
-    // here means it counts against them the same way a lost dispute would.
-    workerLevelService.recalculate(workerId).catch(err =>
-      console.error(`[AutoComplete][WorkerLevel] Failed for worker ${workerId}:`, err)
-    );
+      // A worker going silent on a live customer request is worse for their
+      // reliability stats than a customer simply ghosting — recalculating
+      // here means it counts against them the same way a lost dispute would.
+      workerLevelService.recalculate(workerId).catch(err =>
+        console.error(`[AutoComplete][WorkerLevel] Failed for worker ${workerId}:`, err)
+      );
+    } catch (err) {
+      console.error(`[AutoComplete] Failed to auto-cancel order ${order._id.toString()}:`, err);
+    }
   }
 }
 
