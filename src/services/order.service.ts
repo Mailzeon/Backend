@@ -61,15 +61,6 @@ export const getPublicSettings = async (): Promise<{
   };
 };
 
-const generateRandomLocalPart = (): string => {
-  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-  let result = 'user';
-  for (let i = 0; i < 8; i++) {
-    result += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return result;
-};
-
 export const orderService = {
   // ── Customer: create order ────────────────────────────────────────────────
   // REWORKED for Cashfree integration:
@@ -108,10 +99,13 @@ export const orderService = {
     const platformCommission = Math.round(amount * commissionRate * 100) / 100;
     const workerEarning      = Math.round((amount - platformCommission) * 100) / 100;
 
-    const localPart = emailType === 'random'
-      ? generateRandomLocalPart()
-      : customLocalPart!.trim().toLowerCase();
-    const requestedEmail = `${localPart}@${domain}`;
+    // 'custom': requestedEmail is the exact address the worker must create.
+    // 'random': requestedEmail stays unset — the worker submits ANY address
+    // on `domain` (see submitCredentials() below), so no fake email needs
+    // to be manufactured here at all.
+    const requestedEmail = emailType === 'custom'
+      ? `${customLocalPart!.trim().toLowerCase()}@${domain}`
+      : undefined;
 
     const customer = await User.findById(customerId);
     if (!customer) throwErr('Customer not found.', 404);
@@ -161,6 +155,8 @@ export const orderService = {
       platformCommission,
       commissionRate,
       requestedEmail,
+      domain,
+      emailType,
       status: 'payment_pending',
       paymentStatus: 'pending',
       walletAmountApplied,
@@ -303,8 +299,21 @@ export const orderService = {
     const order = await Order.findOne({ _id: orderId, workerId, status: 'accepted' });
     if (!order) throwErr('Order not found or not in accepted state.', 404);
 
-    if (order.requestedEmail && credentials.email.trim().toLowerCase() !== order.requestedEmail.toLowerCase()) {
-      throwErr(`Submitted email must exactly match the requested email: ${order.requestedEmail}`, 400);
+    const submittedEmail = credentials.email.trim().toLowerCase();
+
+    if (order.emailType === 'custom') {
+      // Customer asked for one exact address — no substitutions allowed.
+      if (order.requestedEmail && submittedEmail !== order.requestedEmail.toLowerCase()) {
+        throwErr(`Submitted email must exactly match the requested email: ${order.requestedEmail}`, 400);
+      }
+    } else {
+      // 'random' — any address works, old or newly created, as long as
+      // it's actually on the domain the customer chose (e.g. they picked
+      // Gmail, so a Yahoo address doesn't count even though "any" account
+      // is otherwise fine).
+      if (!submittedEmail.endsWith(`@${order.domain.toLowerCase()}`)) {
+        throwErr(`Submitted email must be a @${order.domain} address.`, 400);
+      }
     }
 
     clearOrderTimer(orderId);
