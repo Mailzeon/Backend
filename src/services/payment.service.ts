@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { env } from '../config/env';
 import { CASHFREE_BASE_URL, cashfreeHeaders } from '../config/cashfree';
 import { Order } from '../models/Order.model';
+import { Transaction } from '../models/Transaction.model';
 import { notificationService } from './notification.service';
 import { walletService } from './wallet.service';
 import { emitToMarketplace, EVENTS } from '../socket/events';
@@ -137,6 +138,51 @@ export const paymentService = {
       paymentSessionId: data.payment_session_id,
       cashfreeOrderId: data.order_id ?? cashfreeOrderId,
     };
+  },
+
+  // ── Reconcile stale "pending" wallet recharges ─────────────────────────
+  // Safety net for the case where the customer backs out of Cashfree
+  // checkout without paying: Cashfree's "user dropped" webhook is not
+  // guaranteed to arrive quickly (sometimes minutes later, occasionally not
+  // at all), which previously left the transaction stuck showing "pending"
+  // forever until that webhook eventually landed. Instead of depending on
+  // it, we lazily re-check any of the user's own pending recharges that are
+  // older than STALE_AFTER_MS every time they load their wallet.
+  //
+  // The 5-minute buffer matters: querying Cashfree's Orders API directly
+  // (not our own webhook) reflects the TRUE current state, so if a payment
+  // actually succeeded a few seconds after redirect (processing lag), it
+  // will already show PAID well within 5 minutes — this buffer exists only
+  // to avoid ever mistakenly failing a payment that's still genuinely in
+  // flight, not to wait out the webhook.
+  async reconcileStaleWalletRecharges(userId: string): Promise<void> {
+    const STALE_AFTER_MS = 5 * 60 * 1000;
+    const cutoff = new Date(Date.now() - STALE_AFTER_MS);
+
+    const stale = await Transaction.find({
+      userId,
+      type: 'recharge',
+      status: 'pending',
+      createdAt: { $lt: cutoff },
+      cashfreeOrderId: { $exists: true, $ne: null },
+    });
+
+    for (const txn of stale) {
+      try {
+        const cfStatus = await paymentService.getCashfreeOrderStatus(txn.cashfreeOrderId!);
+        if (cfStatus === 'PAID') {
+          await walletService.confirmRechargeSuccess(txn.cashfreeOrderId!);
+        } else {
+          // Still ACTIVE-but-old, EXPIRED, or TERMINATED — all mean this
+          // particular attempt is dead. The customer can simply retry.
+          await walletService.markRechargeFailed(txn.cashfreeOrderId!);
+        }
+      } catch (err) {
+        // Don't let one bad Cashfree lookup block reconciling the rest, or
+        // block the request (wallet page load) that triggered this.
+        console.error('[Wallet Reconcile] Failed to check recharge', txn._id.toString(), err);
+      }
+    }
   },
 
   // ── Verify webhook signature (HMAC-SHA256, base64) ────────────────────────
