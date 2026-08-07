@@ -11,17 +11,19 @@ const router = Router();
 router.use(authenticate, requireRole('worker', 'customer'));
 
 router.get('/', async (req: Request, res: Response) => {
+  await paymentService.reconcileStaleWalletRecharges(req.user!._id.toString());
   const wallet = await walletService.getBalance(req.user!._id.toString());
   sendSuccess(res, 'Wallet fetched.', wallet);
 });
 
 router.get('/transactions', async (req: Request, res: Response) => {
+  await paymentService.reconcileStaleWalletRecharges(req.user!._id.toString());
   const txns = await walletService.getTransactions(req.user!._id.toString());
   sendSuccess(res, 'Transactions fetched.', txns);
 });
 
 // ── Add Funds (customer only) ──────────────────────────────────────────
-const MIN_RECHARGE_AMOUNT = 10;
+const MIN_RECHARGE_AMOUNT = 1;
 
 router.post('/recharge', requireRole('customer'), async (req: Request, res: Response) => {
   const amount = Number(req.body?.amount);
@@ -31,6 +33,11 @@ router.post('/recharge', requireRole('customer'), async (req: Request, res: Resp
   }
   // Cap to 2 decimal places — same rounding used for order amounts.
   const roundedAmount = Math.round(amount * 100) / 100;
+
+  // Clean up any of this customer's own abandoned recharge attempts before
+  // starting a new one, so old dropped checkouts never keep piling up as
+  // permanent "pending" clutter in their transaction history.
+  await paymentService.reconcileStaleWalletRecharges(req.user!._id.toString());
 
   const user = await User.findById(req.user!._id);
   const phone = req.body?.phone?.trim() || user?.phone;
