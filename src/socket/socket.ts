@@ -27,12 +27,28 @@ export const initSocket = (server: HttpServer): SocketIOServer => {
 
   io.on('connection', (socket) => {
     // Every user joins their own private room on login
-    socket.on('join-room', (userId: string) => {
+    socket.on('join-room', async (userId: string) => {
       if (!userId || typeof userId !== 'string') return;
       // Remembered so 'disconnect' below can tell whose connection just
       // dropped, without trusting anything the client sends at that point.
       socket.data.userId = userId;
       socket.join(`user:${userId}`);
+
+      // A worker's toggle is their own PREFERENCE, stored as-is in the DB —
+      // it's intentionally never touched by connect/disconnect. What admins
+      // see live is "prefers online AND is actually reachable right now",
+      // recomputed on every reconnect. This is what makes a worker's own
+      // toggle already show ON the moment they reopen the app after losing
+      // connection — nothing to manually re-flip — while the admin's count
+      // still only counts workers who are genuinely online this second.
+      try {
+        const user = await User.findById(userId).select('role isOnline').lean();
+        if (user?.role === 'worker' && user.isOnline) {
+          await pushLiveWorkerCount();
+        }
+      } catch (err) {
+        console.error('[Socket] Failed to refresh worker count on join:', err);
+      }
     });
 
     // Approved online workers join the marketplace broadcast room
@@ -52,13 +68,12 @@ export const initSocket = (server: HttpServer): SocketIOServer => {
     });
 
     socket.on('disconnect', async () => {
-      // Safety net for the "Workers Online" count staying truly accurate:
-      // if a worker force-closes the app, loses internet, or their tab just
-      // dies — anything other than deliberately flipping their own
-      // online/offline switch — their isOnline flag would otherwise stay
-      // stuck 'true' forever with no way to correct itself. As soon as
-      // their LAST active connection drops, flip them back to offline and
-      // push the corrected count to admins, same as the deliberate toggle.
+      // NOTE: this does NOT touch the worker's isOnline DB flag anymore —
+      // that field is purely their own preference now. This only affects
+      // what admins see LIVE: as soon as a worker's last active connection
+      // drops (app closed, tab died, internet lost — anything other than
+      // them flipping their own switch), the admin's count drops
+      // immediately, without waiting for them to explicitly go offline.
       const userId = socket.data.userId as string | undefined;
       if (!userId) return;
 
@@ -69,17 +84,12 @@ export const initSocket = (server: HttpServer): SocketIOServer => {
       if (room && room.size > 0) return;
 
       try {
-        const user = await User.findOneAndUpdate(
-          { _id: userId, role: 'worker', isOnline: true },
-          { isOnline: false },
-          { new: true }
-        );
-        if (user) {
-          const onlineWorkers = await User.countDocuments({ role: 'worker', isOnline: true });
-          io.to('admin').emit('worker-online-count-changed', { onlineWorkers });
+        const user = await User.findById(userId).select('role isOnline').lean();
+        if (user?.role === 'worker' && user.isOnline) {
+          await pushLiveWorkerCount();
         }
       } catch (err) {
-        console.error('[Socket] Failed to mark worker offline on disconnect:', err);
+        console.error('[Socket] Failed to refresh worker count on disconnect:', err);
       }
     });
   });
@@ -90,4 +100,29 @@ export const initSocket = (server: HttpServer): SocketIOServer => {
 export const getIO = (): SocketIOServer => {
   if (!io) throw new Error('Socket.IO not initialized. Call initSocket first.');
   return io;
+};
+
+// ── Live "Workers Online" count ──────────────────────────────────────────
+// A worker only counts as genuinely online when BOTH are true:
+//   1. isOnline === true in the DB (their own toggle preference)
+//   2. they currently have at least one live socket connection
+// This is what makes the admin's number track real presence exactly —
+// closing the app drops the count immediately even though isOnline in the
+// DB still says true, and reopening the app restores it immediately with
+// no action needed from the worker.
+export const computeLiveOnlineWorkerCount = async (): Promise<number> => {
+  const onlineWorkers = await User.find({ role: 'worker', isOnline: true }).select('_id').lean();
+  let liveCount = 0;
+  for (const w of onlineWorkers) {
+    const room = io.sockets.adapter.rooms.get(`user:${w._id.toString()}`);
+    if (room && room.size > 0) liveCount++;
+  }
+  return liveCount;
+};
+
+/** Recompute the live count and push it to every connected admin. */
+export const pushLiveWorkerCount = async (): Promise<number> => {
+  const onlineWorkers = await computeLiveOnlineWorkerCount();
+  io.to('admin').emit('worker-online-count-changed', { onlineWorkers });
+  return onlineWorkers;
 };
