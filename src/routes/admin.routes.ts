@@ -291,6 +291,19 @@ router.get('/users/:id/detail', async (req: Request, res: Response) => {
   });
 });
 
+// Admin: manually lift a worker's dispute-strike lock early (a "pardon") —
+// doesn't reset their strike count (that stays as history), just ends the
+// current lock immediately.
+router.post('/users/:id/unlock', async (req: Request, res: Response) => {
+  const user = await User.findOneAndUpdate(
+    { _id: req.params.id, role: 'worker' },
+    { $unset: { lockedUntil: 1 } },
+    { new: true }
+  );
+  if (!user) { sendError(res, 'Worker not found.', 404); return; }
+  sendSuccess(res, 'Lock lifted — they can accept orders again immediately.', user);
+});
+
 // Admin: delete any user's account (soft delete — see user.service.ts).
 // Blocked if that account has an order actively in progress.
 router.delete('/users/:id', async (req: Request, res: Response) => {
