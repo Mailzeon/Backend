@@ -263,6 +263,22 @@ export const orderService = {
 
   // ── Worker: atomically accept an order ───────────────────────────────────
   async acceptOrder(orderId: string, workerId: string, workerName: string): Promise<IOrder> {
+    // Dispute-strike lock — see user.service.ts applyStrike(). A locked
+    // worker still sees this order in the marketplace, they just can't
+    // take it until the lock expires.
+    const worker = await User.findById(workerId).select('lockedUntil');
+    if (worker?.lockedUntil && worker.lockedUntil > new Date()) {
+      const msRemaining = worker.lockedUntil.getTime() - Date.now();
+      const hoursRemaining = Math.ceil(msRemaining / (60 * 60 * 1000));
+      const label = hoursRemaining >= 24
+        ? `${Math.ceil(hoursRemaining / 24)} day(s)`
+        : `${hoursRemaining} hour(s)`;
+      throwErr(
+        `Your account is locked for ${label} due to a dispute resolved against you. You can't accept orders until the lock ends.`,
+        403
+      );
+    }
+
     const timerMinutes = parseInt(await getSetting('orderTimerMinutes', '10'));
     const now          = new Date();
     const timerExpires = new Date(now.getTime() + timerMinutes * 60 * 1000);
