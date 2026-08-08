@@ -6,6 +6,7 @@ import { Rating } from '../models/Rating.model';
 import { WorkerLevelModel } from '../models/WorkerLevel.model';
 import { walletService } from './wallet.service';
 import { workerLevelService } from './workerLevel.service';
+import { userService } from './user.service';
 import { emitToUser, EVENTS } from '../socket/events';
 
 const throwErr = (msg: string, code = 400): never => {
@@ -165,6 +166,13 @@ export const disputeService = {
 
         emitToUser(workerId,   EVENTS.ORDER_CANCELLED, { orderId: order._id });
         emitToUser(customerId, EVENTS.ORDER_CANCELLED, { orderId: order._id });
+
+        // Penalty — see user.service.ts applyStrike() for the escalating
+        // lock logic (worker still sees marketplace orders, just can't
+        // accept any until the lock expires).
+        await userService.applyStrike(workerId).catch(err =>
+          console.error('[Dispute] Failed to apply strike after resolve:', err)
+        );
 
       } else {
         order.status      = 'completed';
