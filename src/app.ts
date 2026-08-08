@@ -25,6 +25,12 @@ import paymentRoutes      from './routes/payment.routes';
 
 export const app = express();
 
+// Render sits behind a reverse proxy — without this, req.ip resolves to
+// Render's internal proxy address for every request, making IP-based
+// features (rate limiting already relies on this too) useless. `1` means
+// "trust the first hop" — correct for Render's single-proxy setup.
+app.set('trust proxy', 1);
+
 // ── Security headers ────────────────────────────────────────────────────────
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
