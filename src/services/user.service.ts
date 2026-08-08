@@ -9,12 +9,29 @@ import { Notification } from '../models/Notification.model';
 import { Rating } from '../models/Rating.model';
 import { Wallet } from '../models/Wallet.model';
 import { WorkerLevelModel } from '../models/WorkerLevel.model';
+import { Settings } from '../models/Settings.model';
+import { LockedIp } from '../models/LockedIp.model';
+import { notificationService } from './notification.service';
 import { clearAuthCookie } from '../utils/cookies';
 import { pushLiveWorkerCount } from '../socket/socket';
 import { Response } from 'express';
 
 const throwErr = (msg: string, code = 400): never => {
   throw Object.assign(new Error(msg), { statusCode: code });
+};
+
+// Own tiny settings cache, independent of order.service.ts's — avoids a
+// cross-service import just for this one setting. A few minutes of
+// staleness on a penalty-duration setting is harmless.
+const settingsCache: Record<string, { value: string; expiresAt: number }> = {};
+const SETTINGS_TTL = 5 * 60 * 1000;
+const getSetting = async (key: string, fallback: string): Promise<string> => {
+  const now = Date.now();
+  if (settingsCache[key] && settingsCache[key].expiresAt > now) return settingsCache[key].value;
+  const s = await Settings.findOne({ key }).lean();
+  const value = (s as any)?.value ?? fallback;
+  settingsCache[key] = { value, expiresAt: now + SETTINGS_TTL };
+  return value;
 };
 
 // Order states where something is still actively in flight — deleting
@@ -136,5 +153,86 @@ export const userService = {
       notificationsDeleted: notifications.deletedCount ?? 0,
       ratingsDeleted:       ratings.deletedCount ?? 0,
     };
+  },
+
+  // ── Dispute-strike penalty ────────────────────────────────────────────────
+  // Called by dispute.service.ts whenever an admin resolves a dispute
+  // AGAINST a worker. Escalating temporary lock, tunable from the admin
+  // Settings panel (no code change needed): strikeLockHours1/2/3/4Plus.
+  //
+  // During the lock, the worker still sees every order in the marketplace
+  // (nothing is filtered out) — order.service.ts acceptOrder() is what
+  // actually blocks them, with a message showing exactly how long is left.
+  // This is deliberate: seeing orders they can't take is the whole point.
+  async applyStrike(workerId: string): Promise<{ strikeCount: number; lockedUntil: Date }> {
+    const worker = await User.findById(workerId);
+    if (!worker || worker.role !== 'worker') {
+      throwErr('Strike can only be applied to a worker account.', 400);
+    }
+
+    const newStrikeCount = (worker!.strikeCount ?? 0) + 1;
+    const tierSettingKey =
+      newStrikeCount === 1 ? 'strikeLockHours1' :
+      newStrikeCount === 2 ? 'strikeLockHours2' :
+      newStrikeCount === 3 ? 'strikeLockHours3' : 'strikeLockHours4Plus';
+    const tierDefault =
+      newStrikeCount === 1 ? '6' :
+      newStrikeCount === 2 ? '24' :
+      newStrikeCount === 3 ? '72' : '168';
+
+    const hours = parseInt(await getSetting(tierSettingKey, tierDefault), 10) || parseInt(tierDefault, 10);
+    const lockedUntil = new Date(Date.now() + hours * 60 * 60 * 1000);
+
+    worker!.strikeCount   = newStrikeCount;
+    worker!.lockedUntil   = lockedUntil;
+    worker!.lastStrikeAt  = new Date();
+    await worker!.save();
+
+    // Close the "just make a new account" loophole — lock every IP on
+    // record for this worker too, so a fresh registration or a login from
+    // the same network inherits the same lock (see auth.service.ts).
+    const ips = [worker!.registrationIp, worker!.lastLoginIp].filter(Boolean) as string[];
+    await Promise.all(
+      Array.from(new Set(ips)).map(ip =>
+        LockedIp.findOneAndUpdate(
+          { ip },
+          { ip, workerId: worker!._id, lockedUntil, strikeCount: newStrikeCount },
+          { upsert: true }
+        )
+      )
+    );
+
+    const hoursLabel = hours >= 24 ? `${Math.round(hours / 24)} day(s)` : `${hours} hour(s)`;
+    await notificationService.create({
+      userId: worker!._id,
+      title: `⚠️ Account Locked — Strike ${newStrikeCount}`,
+      message:
+        `A dispute against you was resolved in the customer's favor. Your account is locked for ` +
+        `${hoursLabel} — you'll still see orders in the marketplace but can't accept any until the ` +
+        `lock ends. Please make sure every account you deliver is genuine and working going forward, ` +
+        `or future locks will be longer.`,
+      type: 'dispute',
+    });
+
+    // 4+ strikes is a clear repeat-offender pattern — flag it for a human
+    // to make the permanent call (existing isApproved suspend toggle),
+    // rather than the system silently escalating forever on its own.
+    if (newStrikeCount >= 4) {
+      const admins = await User.find({ role: 'admin' }).select('_id');
+      await Promise.all(admins.map(a => notificationService.create({
+        userId: a._id,
+        title: `🚨 Repeat Offender: ${worker!.name}`,
+        message: `${worker!.name} has now received ${newStrikeCount} strikes for upheld disputes. Consider a permanent suspension from Users → this worker's profile.`,
+        type: 'dispute',
+      })));
+    }
+
+    if (worker!.isOnline) {
+      pushLiveWorkerCount().catch(err =>
+        console.error('[UserService] Failed to refresh worker count after strike:', err)
+      );
+    }
+
+    return { strikeCount: newStrikeCount, lockedUntil };
   },
 };
