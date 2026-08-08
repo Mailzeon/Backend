@@ -61,6 +61,36 @@ const UserSchema = new Schema<IUser>(
       default: 'bronze',
     },
 
+    // ── Dispute-strike penalty system ───────────────────────────────────────
+    // See user.service.ts applyStrike() — incremented every time an admin
+    // resolves a dispute AGAINST this worker (fake/no credentials, etc.).
+    // lockedUntil is checked in order.service.ts acceptOrder() — a locked
+    // worker still SEES every order in the marketplace, they just can't
+    // accept any until the lock expires.
+    strikeCount: {
+      type: Number,
+      default: 0,
+    },
+    lockedUntil: {
+      type: Date,
+    },
+    lastStrikeAt: {
+      type: Date,
+    },
+
+    // ── IP tracking (anti-evasion for the penalty above) ────────────────────
+    // A locked worker making a brand-new account to dodge the penalty is
+    // the obvious loophole — these let register()/login() in auth.service.ts
+    // check incoming IPs against LockedIp.model.ts and apply/extend the same
+    // lock to whatever account is being used, regardless of which one was
+    // originally struck.
+    registrationIp: {
+      type: String,
+    },
+    lastLoginIp: {
+      type: String,
+    },
+
     // ── Payment details (worker withdrawals) ───────────────────────────────
     upiId: { type: String, trim: true },
     bankDetails: {
