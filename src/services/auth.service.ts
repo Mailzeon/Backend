@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { User } from '../models/User.model';
 import { Wallet } from '../models/Wallet.model';
 import { WorkerLevelModel } from '../models/WorkerLevel.model';
+import { LockedIp } from '../models/LockedIp.model';
 import { signToken } from '../utils/jwt';
 import { sendPasswordResetEmail } from '../utils/email';
 import { IUser, UserRole } from '../types';
@@ -30,13 +31,32 @@ const throwHttpError = (message: string, statusCode: number): never => {
 };
 
 export const authService = {
-  async register(input: RegisterInput): Promise<AuthResult> {
+  async register(input: RegisterInput, ip?: string): Promise<AuthResult> {
     const { name, email, password, role } = input;
 
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) throwHttpError('An account with this email already exists.', 409);
 
-    const user = await User.create({ name: name.trim(), email, password, role });
+    // Anti-evasion: block a brand-new WORKER registration from an IP that
+    // currently has a dispute-strike lock in effect (see user.service.ts
+    // applyStrike() / LockedIp.model.ts). Customers aren't restricted —
+    // this penalty system only exists for worker misconduct.
+    if (role === 'worker' && ip) {
+      const ipLock = await LockedIp.findOne({ ip, lockedUntil: { $gt: new Date() } });
+      if (ipLock) {
+        const hoursLeft = Math.ceil((ipLock.lockedUntil.getTime() - Date.now()) / (60 * 60 * 1000));
+        const label = hoursLeft >= 24 ? `${Math.ceil(hoursLeft / 24)} day(s)` : `${hoursLeft} hour(s)`;
+        throwHttpError(
+          `Registration is temporarily blocked from this network due to a recent policy violation. Try again in ${label}.`,
+          403
+        );
+      }
+    }
+
+    const user = await User.create({
+      name: name.trim(), email, password, role,
+      registrationIp: ip, lastLoginIp: ip,
+    });
 
     // Workers get a wallet and level record on registration
     if (role === 'worker') {
@@ -50,13 +70,30 @@ export const authService = {
     return { user: user.toJSON(), token };
   },
 
-  async login(email: string, password: string): Promise<AuthResult> {
+  async login(email: string, password: string, ip?: string): Promise<AuthResult> {
     // +password because select: false in schema
     const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
     if (!user) throwHttpError('Invalid email or password.', 401);
 
     const valid = await user!.comparePassword(password);
     if (!valid) throwHttpError('Invalid email or password.', 401);
+
+    if (ip) {
+      user!.lastLoginIp = ip;
+
+      // Anti-evasion, part 2: if this IP has an active lock (from a
+      // DIFFERENT, previously-struck account), inherit that same lock onto
+      // whichever account is logging in right now — closes the loophole of
+      // dodging a strike by simply switching to an already-existing second
+      // account instead of registering a brand new one.
+      if (user!.role === 'worker') {
+        const ipLock = await LockedIp.findOne({ ip, lockedUntil: { $gt: new Date() } });
+        if (ipLock && (!user!.lockedUntil || user!.lockedUntil < ipLock.lockedUntil)) {
+          user!.lockedUntil = ipLock.lockedUntil;
+        }
+      }
+      await user!.save();
+    }
 
     const token = signToken(user!._id, user!.role as UserRole);
     return { user: user!.toJSON(), token };
