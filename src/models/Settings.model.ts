@@ -72,6 +72,31 @@ export const seedDefaultSettings = async (): Promise<void> => {
       value: '10',
       description: 'Minutes worker has to submit credentials after accepting',
     },
+    // ── Dispute-strike penalty (escalating) ──────────────────────────────
+    // See user.service.ts applyStrike() — hours a worker is locked out of
+    // accepting orders after a dispute is resolved against them (or after
+    // going silent on a live verification request). They still see every
+    // order in the marketplace during the lock, just can't take any.
+    {
+      key: 'strikeLockHours1',
+      value: '6',
+      description: '1st dispute strike — hours the worker is locked out of accepting orders',
+    },
+    {
+      key: 'strikeLockHours2',
+      value: '24',
+      description: '2nd dispute strike — hours locked',
+    },
+    {
+      key: 'strikeLockHours3',
+      value: '72',
+      description: '3rd dispute strike — hours locked',
+    },
+    {
+      key: 'strikeLockHours4Plus',
+      value: '168',
+      description: '4th and every further strike — hours locked (also flags the worker to admins as a repeat offender for possible permanent suspension)',
+    },
   ];
 
   for (const s of defaults) {
