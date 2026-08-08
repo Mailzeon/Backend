@@ -6,23 +6,15 @@ import { uploadProfileImage } from '../controllers/user.controller';
 import { Request, Response } from 'express';
 import { User } from '../models/User.model';
 import { sendSuccess, sendError } from '../utils/response';
-import { pushLiveWorkerCount } from '../socket/socket';
 import { userService } from '../services/user.service';
 
 const router = Router();
 router.use(authenticate);
 
-// Toggle worker online/offline status
-router.patch('/status', requireRole('worker'), async (req: Request, res: Response) => {
-  const { isOnline } = req.body;
-  if (typeof isOnline !== 'boolean') { sendError(res, 'isOnline must be boolean.', 400); return; }
-  const user = await User.findByIdAndUpdate(req.user!._id, { isOnline }, { new: true });
-  sendSuccess(res, `You are now ${isOnline ? 'online' : 'offline'}.`, user);
-
-  // Push the fresh LIVE count (preference + actually connected right now)
-  // to every admin currently viewing the dashboard.
-  await pushLiveWorkerCount();
-});
+// NOTE: the old PATCH /status (manual online/offline toggle) has been
+// removed on purpose. A worker is now automatically "online" for as long
+// as they have the app open — see socket.ts join-room/disconnect handlers —
+// with zero manual step and nothing to forget to flip back on.
 
 // Update profile / payment details
 router.put('/profile', async (req: Request, res: Response) => {
