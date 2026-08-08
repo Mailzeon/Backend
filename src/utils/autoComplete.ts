@@ -4,6 +4,7 @@ import { Notification }       from '../models/Notification.model';
 import { walletService }      from '../services/wallet.service';
 import { paymentService }     from '../services/payment.service';
 import { workerLevelService } from '../services/workerLevel.service';
+import { userService }        from '../services/user.service';
 import { emitToUser, EVENTS } from '../socket/events';
 
 /**
@@ -190,6 +191,13 @@ async function autoCancelUnresponsiveWorker(now: Date): Promise<void> {
       // here means it counts against them the same way a lost dispute would.
       workerLevelService.recalculate(workerId).catch(err =>
         console.error(`[AutoComplete][WorkerLevel] Failed for worker ${workerId}:`, err)
+      );
+
+      // Same penalty as a human-adjudicated dispute upheld against them —
+      // going completely silent on a live customer is exactly the kind of
+      // fault this system exists to deter.
+      userService.applyStrike(workerId).catch(err =>
+        console.error(`[AutoComplete] Failed to apply strike for worker ${workerId}:`, err)
       );
     } catch (err) {
       console.error(`[AutoComplete] Failed to auto-cancel order ${order._id.toString()}:`, err);
