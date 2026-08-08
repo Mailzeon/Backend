@@ -38,6 +38,11 @@ export interface IUser extends Document {
   isOnline: boolean;
   isApproved: boolean;           // Workers need admin approval before accepting orders
   level: WorkerLevel;
+  strikeCount?: number;
+  lockedUntil?: Date;
+  lastStrikeAt?: Date;
+  registrationIp?: string;
+  lastLoginIp?: string;
   upiId?: string;
   bankDetails?: {
     accountHolder: string;
