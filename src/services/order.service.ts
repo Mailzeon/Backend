@@ -253,12 +253,33 @@ export const orderService = {
   // FIX: also hides the customer's full `amount`/commission breakdown here —
   // this is the list workers browse BEFORE accepting, so the leak applied
   // even earlier than getOrder()/getWorkerOrders() below.
+  // Masks the local-part of a requested email so browsing (not-yet-accepted)
+  // workers can't just go create the exact address themselves outside the
+  // platform — they only learn the real address after formally accepting
+  // the order. Domain stays fully visible (that's not sensitive — it's
+  // literally the order's category), only the chosen name is hidden.
+  // Fixed dot count (not proportional to the real length) on purpose — so
+  // even the LENGTH of the local-part isn't something a browsing worker
+  // could infer.
+  maskRequestedEmail(email: string): string {
+    const [local, domain] = email.split('@');
+    if (!domain) return email;
+    const visible = local.slice(0, 1);
+    return `${visible}••••••@${domain}`;
+  },
+
   async getMarketplaceOrders(): Promise<IOrder[]> {
     const orders = await Order.find({ status: 'pending', workerId: null })
       .sort({ createdAt: -1 })
       .select('-credentials -amount -platformCommission -commissionRate')
       .lean();
-    return orders as unknown as IOrder[];
+
+    const masked = orders.map(o => ({
+      ...o,
+      requestedEmail: o.requestedEmail ? orderService.maskRequestedEmail(o.requestedEmail) : o.requestedEmail,
+    }));
+
+    return masked as unknown as IOrder[];
   },
 
   // ── Worker: atomically accept an order ───────────────────────────────────
