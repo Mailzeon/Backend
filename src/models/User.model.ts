@@ -40,6 +40,9 @@ const UserSchema = new Schema<IUser>(
     },
 
     // ── Worker-specific ────────────────────────────────────────────────────
+    // Fully automatic — set true the moment a worker's socket connects
+    // (site open in a tab), false the moment their last connection drops.
+    // There's no manual toggle anymore; see socket.ts join-room/disconnect.
     isOnline: {
       type: Boolean,
       default: false,
