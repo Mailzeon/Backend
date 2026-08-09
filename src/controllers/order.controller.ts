@@ -51,14 +51,15 @@ export const acceptOrder = async (req: Request, res: Response) => {
 };
 
 export const submitCredentials = async (req: Request, res: Response) => {
-  const { email, password, notes } = req.body;
+  const { email, password, notes, acknowledgedNoPhone } = req.body;
   if (!email?.trim() || !password?.trim()) {
     sendError(res, 'Email and password are required.', 400); return;
   }
   const order = await orderService.submitCredentials(
     req.params.id,
     req.user!._id.toString(),
-    { email: email.trim(), password: password.trim(), notes }
+    { email: email.trim(), password: password.trim(), notes },
+    acknowledgedNoPhone === true
   );
   sendSuccess(res, 'Credentials submitted successfully.', order);
 };
@@ -77,6 +78,22 @@ export const confirmVerificationNumber = async (req: Request, res: Response) => 
     req.params.id, req.user!._id.toString()
   );
   sendSuccess(res, 'Confirmed. Customer has been notified.', order);
+};
+
+export const requestVerificationCode = async (req: Request, res: Response) => {
+  const order = await orderService.requestVerificationCode(
+    req.params.id, req.user!._id.toString()
+  );
+  sendSuccess(res, 'Code requested. Worker has been notified.', order);
+};
+
+export const submitVerificationCode = async (req: Request, res: Response) => {
+  const { code } = req.body;
+  if (!code?.trim()) { sendError(res, 'Verification code is required.', 400); return; }
+  const order = await orderService.submitVerificationCode(
+    req.params.id, req.user!._id.toString(), code
+  );
+  sendSuccess(res, 'Code sent. Customer has been notified.', order);
 };
 
 export const confirmSuccess = async (req: Request, res: Response) => {
