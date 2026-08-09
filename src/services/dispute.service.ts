@@ -179,9 +179,8 @@ export const disputeService = {
         order.completedAt = new Date();
         await order.save();
 
-        await walletService.releaseFromPending(
-          workerId, order.workerEarning, order._id,
-          `Earned: Order #${orderRef} (dispute rejected)`
+        await walletService.settleOrderEarnings(
+          order, `Earned: Order #${orderRef} (dispute rejected)`
         );
 
         await Promise.all([
