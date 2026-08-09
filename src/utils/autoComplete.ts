@@ -82,9 +82,8 @@ async function autoCompleteAbandonedByCustomer(now: Date): Promise<void> {
       const customerId = order.customerId.toString();
       const orderRef   = order._id.toString().slice(-6).toUpperCase();
 
-      await walletService.releaseFromPending(
-        workerId, order.workerEarning, order._id,
-        `Auto-completed: Order #${orderRef}`
+      await walletService.settleOrderEarnings(
+        order, `Auto-completed: Order #${orderRef}`
       );
 
       const workerNotif = await Notification.create({
