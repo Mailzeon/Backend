@@ -91,6 +91,21 @@ const UserSchema = new Schema<IUser>(
       type: String,
     },
 
+    // ── Referral program (workers only, for now) ────────────────────────────
+    // See auth.service.ts register() for how these get set, and
+    // order.service.ts acceptOrder()/wallet.service.ts settleOrderEarnings()
+    // for how the referral tax actually gets paid out on completed orders.
+    referralCode: {
+      type: String,
+      unique: true,
+      sparse: true, // only workers get one; customers/admins leave this unset
+    },
+    referredBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      // Permanent once set at registration — never changes afterward.
+    },
+
     // ── Payment details (worker withdrawals) ───────────────────────────────
     upiId: { type: String, trim: true },
     bankDetails: {
