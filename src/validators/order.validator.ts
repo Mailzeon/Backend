@@ -76,6 +76,13 @@ export const submitNumberSchema = z.object({
     .regex(/^\d+$/, 'Verification number should contain digits only'),
 });
 
+export const submitCodeSchema = z.object({
+  code: z.string()
+    .trim()
+    .min(1, 'Verification code is required')
+    .max(20, 'Verification code is too long'),
+});
+
 export const reportProblemSchema = z.object({
   reason: z.enum(['wrong_password', 'unable_to_login', 'account_issue', 'other'])
     .default('other'),
