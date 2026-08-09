@@ -97,6 +97,16 @@ export const seedDefaultSettings = async (): Promise<void> => {
       value: '168',
       description: '4th and every further strike — hours locked (also flags the worker to admins as a repeat offender for possible permanent suspension)',
     },
+    // ── Worker referral program ──────────────────────────────────────────
+    // See wallet.service.ts settleOrderEarnings() — this percentage is
+    // deducted from a REFERRED worker's earning on every order they
+    // complete and paid straight to whoever referred them. Comes entirely
+    // out of the worker's own cut, never the platform's commission.
+    {
+      key: 'referralTaxRate',
+      value: '3',
+      description: 'Percent of a referred worker\'s earning paid to their referrer on every completed order',
+    },
   ];
 
   for (const s of defaults) {
