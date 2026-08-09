@@ -268,18 +268,38 @@ export const orderService = {
     return `${visible}••••••@${domain}`;
   },
 
-  async getMarketplaceOrders(): Promise<IOrder[]> {
-    const orders = await Order.find({ status: 'pending', workerId: null })
-      .sort({ createdAt: -1 })
-      .select('-credentials -amount -platformCommission -commissionRate')
-      .lean();
+  async getMarketplaceOrders(workerId: string): Promise<IOrder[]> {
+    const [orders, worker] = await Promise.all([
+      Order.find({ status: 'pending', workerId: null })
+        .sort({ createdAt: -1 })
+        .select('-credentials -amount -platformCommission -commissionRate')
+        .lean(),
+      User.findById(workerId).select('referredBy').lean(),
+    ]);
 
-    const masked = orders.map(o => ({
+    // If THIS worker was referred, show every order's earning already net
+    // of the referral tax they'll actually pay — no surprise after
+    // accepting. A non-referred worker viewing the exact same order sees
+    // the full, untaxed amount; nothing on the order document itself
+    // changes here, this is purely a per-viewer display adjustment.
+    let taxRate = 0;
+    if (worker?.referredBy) {
+      taxRate = parseFloat(await getSetting('referralTaxRate', '3'));
+    }
+
+    const adjusted = orders.map(o => ({
       ...o,
       requestedEmail: o.requestedEmail ? orderService.maskRequestedEmail(o.requestedEmail) : o.requestedEmail,
+      workerEarning: taxRate > 0
+        ? Math.round(o.workerEarning * (1 - taxRate / 100) * 100) / 100
+        : o.workerEarning,
+      // Sent alongside (not replacing workerEarning) purely so the
+      // frontend can show "X% referral fee already deducted" transparently
+      // instead of the worker just seeing a smaller number with no context.
+      appliedReferralTaxRate: taxRate > 0 ? taxRate : undefined,
     }));
 
-    return masked as unknown as IOrder[];
+    return adjusted as unknown as IOrder[];
   },
 
   // ── Worker: atomically accept an order ───────────────────────────────────
@@ -287,7 +307,7 @@ export const orderService = {
     // Dispute-strike lock — see user.service.ts applyStrike(). A locked
     // worker still sees this order in the marketplace, they just can't
     // take it until the lock expires.
-    const worker = await User.findById(workerId).select('lockedUntil');
+    const worker = await User.findById(workerId).select('lockedUntil referredBy');
     if (worker?.lockedUntil && worker.lockedUntil > new Date()) {
       const msRemaining = worker.lockedUntil.getTime() - Date.now();
       const hoursRemaining = Math.ceil(msRemaining / (60 * 60 * 1000));
@@ -304,13 +324,34 @@ export const orderService = {
     const now          = new Date();
     const timerExpires = new Date(now.getTime() + timerMinutes * 60 * 1000);
 
+    const updateFields: Record<string, unknown> = {
+      status: 'accepted', workerId, acceptedAt: now, timerExpiresAt: timerExpires,
+    };
+
+    // Referral tax — locked in NOW (at accept time), not derived later, so
+    // it stays fixed at whatever rate applied the moment this worker took
+    // the job even if the setting changes afterward. See wallet.service.ts
+    // settleOrderEarnings() for where this actually gets paid out.
+    if (worker?.referredBy) {
+      const taxRate = parseFloat(await getSetting('referralTaxRate', '3'));
+      updateFields.referralTaxRate = taxRate;
+      updateFields.referrerId = worker.referredBy;
+    }
+
     const order = await Order.findOneAndUpdate(
       { _id: orderId, status: 'pending', workerId: null },
-      { status: 'accepted', workerId, acceptedAt: now, timerExpiresAt: timerExpires },
+      updateFields,
       { new: true }
     );
 
     if (!order) throwErr('This order is no longer available.', 409);
+
+    // Needs order.workerEarning, which we only have AFTER the update above
+    // resolves — a second small write, but only for referred workers.
+    if (worker?.referredBy && order!.referralTaxRate) {
+      order!.referralTaxAmount = Math.round(order!.workerEarning * (order!.referralTaxRate / 100) * 100) / 100;
+      await order!.save();
+    }
 
     const customerId = order!.customerId.toString();
     startOrderTimer(orderId, workerId, customerId, timerMinutes);
@@ -517,10 +558,8 @@ export const orderService = {
 
     const workerId = order.workerId!.toString();
 
-    await walletService.releaseFromPending(
-      workerId,
-      order.workerEarning,
-      order._id,
+    await walletService.settleOrderEarnings(
+      order,
       `Earned: Order #${order._id.toString().slice(-6).toUpperCase()}`
     );
 
