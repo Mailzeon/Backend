@@ -5,6 +5,8 @@ import { upload } from '../middleware/upload.middleware';
 import { uploadProfileImage } from '../controllers/user.controller';
 import { Request, Response } from 'express';
 import { User } from '../models/User.model';
+import { Order } from '../models/Order.model';
+import { Transaction } from '../models/Transaction.model';
 import { sendSuccess, sendError } from '../utils/response';
 import { userService } from '../services/user.service';
 
@@ -41,6 +43,44 @@ router.post('/mark-installed', async (req: Request, res: Response) => {
     lastSeenAsInstalledApp: new Date(),
   });
   sendSuccess(res, 'Noted.');
+});
+
+// ── Referral program (workers only) ─────────────────────────────────────
+// See auth.service.ts register() for how a referral gets recorded, and
+// wallet.service.ts settleOrderEarnings() for how the referral tax is
+// actually paid out on each of the referred worker's completed orders.
+router.get('/me/referral', requireRole('worker'), async (req: Request, res: Response) => {
+  const me = await User.findById(req.user!._id).select('referralCode');
+
+  const referred = await User.find({ referredBy: req.user!._id })
+    .select('name createdAt')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const referredIds = referred.map(r => r._id);
+  const completedCounts = referredIds.length > 0
+    ? await Order.aggregate([
+        { $match: { workerId: { $in: referredIds }, status: 'completed' } },
+        { $group: { _id: '$workerId', count: { $sum: 1 } } },
+      ])
+    : [];
+  const completedMap = new Map(completedCounts.map((c: any) => [c._id.toString(), c.count]));
+
+  const totalEarnedAgg = await Transaction.aggregate([
+    { $match: { userId: req.user!._id, type: 'credit', description: /^Referral bonus/, status: 'completed' } },
+    { $group: { _id: null, total: { $sum: '$amount' } } },
+  ]);
+  const totalEarned = totalEarnedAgg[0]?.total ?? 0;
+
+  sendSuccess(res, 'Referral info fetched.', {
+    referralCode: me?.referralCode,
+    totalEarned,
+    referred: referred.map(r => ({
+      name: r.name,
+      joinedAt: r.createdAt,
+      completedOrders: completedMap.get(r._id.toString()) ?? 0,
+    })),
+  });
 });
 
 // Delete my own account — soft delete (see user.service.ts). Blocked if
