@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { Types } from 'mongoose';
 import { User } from '../models/User.model';
 import { Wallet } from '../models/Wallet.model';
 import { WorkerLevelModel } from '../models/WorkerLevel.model';
@@ -17,6 +18,7 @@ interface RegisterInput {
   email: string;
   password: string;
   role: 'customer' | 'worker';
+  referralCode?: string;
 }
 
 interface AuthResult {
@@ -30,9 +32,32 @@ const throwHttpError = (message: string, statusCode: number): never => {
   throw err;
 };
 
+// Short, unambiguous codes (no 0/O/1/I confusion) — readable enough to say
+// out loud or type from memory, which matters since this is what actually
+// gets shared between people.
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const generateReferralCode = (): string => {
+  let code = '';
+  for (let i = 0; i < 6; i++) code += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+  return code;
+};
+
+// Retries on the astronomically-unlikely event of a collision — findOne
+// check keeps this safe without relying on a race-prone "generate once and
+// hope" approach.
+const generateUniqueReferralCode = async (): Promise<string> => {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = generateReferralCode();
+    const exists = await User.findOne({ referralCode: code }).select('_id').lean();
+    if (!exists) return code;
+  }
+  // Fall back to a longer code if we somehow collided 5 times in a row
+  return generateReferralCode() + generateReferralCode().slice(0, 2);
+};
+
 export const authService = {
   async register(input: RegisterInput, ip?: string): Promise<AuthResult> {
-    const { name, email, password, role } = input;
+    const { name, email, password, role, referralCode } = input;
 
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) throwHttpError('An account with this email already exists.', 409);
@@ -53,9 +78,40 @@ export const authService = {
       }
     }
 
+    // ── Referral program (workers only) ────────────────────────────────
+    // Resolved and validated BEFORE creating the user, but any problem
+    // here (bad code, self-referral, same-IP fraud) is deliberately
+    // silent — it just means no referral relationship gets recorded,
+    // never a blocked registration. A typo'd or fraudulent referral code
+    // should never be the reason someone can't sign up.
+    let referredBy: Types.ObjectId | undefined;
+    let newReferralCode: string | undefined;
+
+    if (role === 'worker') {
+      newReferralCode = await generateUniqueReferralCode();
+
+      if (referralCode?.trim()) {
+        const referrer = await User.findOne({
+          referralCode: referralCode.trim().toUpperCase(),
+          role: 'worker',
+        }).select('_id registrationIp lastLoginIp');
+
+        if (referrer) {
+          const sameIp = !!ip && (referrer.registrationIp === ip || referrer.lastLoginIp === ip);
+          if (!sameIp) {
+            referredBy = referrer._id;
+          }
+          // else: silently drop it — almost certainly a self-referral
+          // attempt from the same device/network.
+        }
+      }
+    }
+
     const user = await User.create({
       name: name.trim(), email, password, role,
       registrationIp: ip, lastLoginIp: ip,
+      referralCode: newReferralCode,
+      referredBy,
     });
 
     // Workers get a wallet and level record on registration
