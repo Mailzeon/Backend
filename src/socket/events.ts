@@ -15,6 +15,8 @@ export const EVENTS = {
   // Verification number flow (Google "new device login" style)
   NUMBER_SUBMITTED:  'number-submitted',   // → worker's room (customer submitted the number they see)
   NUMBER_CONFIRMED:  'number-confirmed',   // → customer's room (worker confirmed selecting it)
+  CODE_REQUESTED:    'code-requested',     // → worker's room (customer needs an actual code instead)
+  CODE_RECEIVED:     'code-received',      // → customer's room (worker sent the code)
 
   // Wallet & admin
   WITHDRAWAL_DONE:   'withdrawal-done',    // → worker's room
