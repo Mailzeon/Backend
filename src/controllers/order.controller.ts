@@ -38,8 +38,8 @@ export const cancelOrder = async (req: Request, res: Response) => {
   sendSuccess(res, 'Order cancelled successfully.', order);
 };
 
-export const getMarketplace = async (_req: Request, res: Response) => {
-  const orders = await orderService.getMarketplaceOrders();
+export const getMarketplace = async (req: Request, res: Response) => {
+  const orders = await orderService.getMarketplaceOrders(req.user!._id.toString());
   sendSuccess(res, 'Marketplace orders fetched.', orders);
 };
 
