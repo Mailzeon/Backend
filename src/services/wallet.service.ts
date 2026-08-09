@@ -47,6 +47,89 @@ export const walletService = {
     );
   },
 
+  // Like releaseFromPending, but for when a REFERRAL TAX applies (see
+  // Order.model.ts referralTaxAmount) — the amount originally held in
+  // pendingBalance (at accept time, via moveToPending) was the FULL
+  // workerEarning, but only the NET amount (after the referral cut)
+  // actually becomes available/counted balance. Keeping these separate is
+  // what makes pendingBalance zero out correctly either way.
+  async releaseFromPendingWithDeduction(
+    userId: Types.ObjectId | string,
+    pendingAmountToRemove: number,
+    netAmountToCredit: number,
+    orderId: Types.ObjectId | string,
+    description: string
+  ) {
+    await Wallet.findOneAndUpdate(
+      { userId },
+      { $inc: { balance: netAmountToCredit, pendingBalance: -pendingAmountToRemove, totalEarned: netAmountToCredit } }
+    );
+    await Transaction.findOneAndUpdate(
+      { userId, orderId, status: 'pending', type: 'credit' },
+      { status: 'completed', description, amount: netAmountToCredit }
+    );
+  },
+
+  // Pays the referrer their cut — a brand-new, separate 'completed'
+  // transaction (there's no pending phase for this side, it's paid the
+  // instant the referred worker's order is settled).
+  async creditReferralBonus(
+    referrerId: Types.ObjectId | string,
+    amount: number,
+    orderId: Types.ObjectId | string,
+    description: string
+  ) {
+    await walletService.getOrCreate(referrerId);
+    await Wallet.findOneAndUpdate({ userId: referrerId }, { $inc: { balance: amount, totalEarned: amount } });
+    await Transaction.create({ userId: referrerId, orderId, type: 'credit', amount, status: 'completed', description });
+  },
+
+  // ── Order settlement (the single place every "worker gets paid" path
+  //    should call, instead of releaseFromPending directly) ───────────────
+  // Handles the referral split transparently: if this order has a
+  // referralTaxAmount/referrerId locked in (see order.service.ts
+  // acceptOrder()), the worker gets workerEarning minus that cut, and the
+  // referrer is paid the cut in the same call. If there's no referral tax,
+  // this behaves exactly like a plain releaseFromPending.
+  async settleOrderEarnings(
+    order: {
+      _id: Types.ObjectId | string;
+      workerId?: Types.ObjectId | string;
+      workerEarning: number;
+      referralTaxAmount?: number;
+      referrerId?: Types.ObjectId | string;
+    },
+    baseDescription: string
+  ): Promise<void> {
+    if (!order.workerId) return;
+    const workerId   = order.workerId.toString();
+    const grossAmount = order.workerEarning;
+    const taxAmount   = order.referralTaxAmount ?? 0;
+    const netAmount   = Math.round((grossAmount - taxAmount) * 100) / 100;
+
+    const workerDesc = taxAmount > 0
+      ? `${baseDescription} (₹${taxAmount} referral fee deducted)`
+      : baseDescription;
+
+    await walletService.releaseFromPendingWithDeduction(
+      workerId, grossAmount, netAmount, order._id, workerDesc
+    );
+
+    if (taxAmount > 0 && order.referrerId) {
+      await walletService.creditReferralBonus(
+        order.referrerId, taxAmount, order._id,
+        `Referral bonus — ${baseDescription}`
+      );
+      await notificationService.create({
+        userId:  order.referrerId,
+        title:   `💸 Referral Bonus — ₹${taxAmount}`,
+        message: `A worker you referred completed an order. ₹${taxAmount} has been credited to your wallet.`,
+        type:    'wallet',
+        orderId: order._id,
+      });
+    }
+  },
+
   // NEW: Reverses a pending amount WITHOUT crediting it to balance/totalEarned.
   // Used when a dispute is resolved AGAINST the worker — the order is
   // cancelled and the worker should not be paid for it. Unlike
