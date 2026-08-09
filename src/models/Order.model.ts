@@ -72,16 +72,29 @@ export interface IOrder extends Document {
     notes?: string;
   };
 
-  // The number the customer sees on their new-device Google login screen.
-  // Submitted BY the customer (not the worker) — see order.service.ts
-  // submitVerificationNumber(). The worker reads this number, selects the
-  // matching option on their own already-logged-in device's Google prompt,
-  // then confirms below.
+  // The number the customer sees on their new-device Google login screen
+  // (method: 'number'), OR the actual login code the worker sends back
+  // (method: 'code') — see verificationMethod below. Same field, different
+  // meaning depending on which flow the customer picked, since Google
+  // doesn't always show the same kind of prompt.
   verificationCode?: string;
+
+  // Which verification flow is active for this order. Google sometimes
+  // shows a "select this number on your other device" prompt, and
+  // sometimes just texts/shows a plain code instead — the platform can't
+  // control which one, so the customer picks whichever matches what they
+  // actually see:
+  //   'number' — customer submits the number, worker CONFIRMS by selecting
+  //              it on their own device (see verificationConfirmed).
+  //   'code'   — customer REQUESTS a code, worker submits the actual code
+  //              back (e.g. from an authenticator app or SMS they have
+  //              access to for the account), customer types it in.
+  verificationMethod?: 'number' | 'code';
 
   // True once the worker has selected the matching number on their device
   // and tapped "Confirm" in the app. Lets the customer's UI show "worker
   // confirmed — try logging in now" instead of a raw code to type in.
+  // Only meaningful when verificationMethod === 'number'.
   verificationConfirmed?: boolean;
 
   acceptedAt?: Date;
@@ -198,6 +211,7 @@ const OrderSchema = new Schema<IOrder>(
     },
 
     verificationCode: String,
+    verificationMethod: { type: String, enum: ['number', 'code'] },
     verificationConfirmed: { type: Boolean, default: false },
     acceptedAt: Date,
     timerExpiresAt: Date,
