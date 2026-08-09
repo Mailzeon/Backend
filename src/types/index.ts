@@ -43,6 +43,8 @@ export interface IUser extends Document {
   lastStrikeAt?: Date;
   registrationIp?: string;
   lastLoginIp?: string;
+  referralCode?: string;
+  referredBy?: Types.ObjectId | string;
   upiId?: string;
   bankDetails?: {
     accountHolder: string;
