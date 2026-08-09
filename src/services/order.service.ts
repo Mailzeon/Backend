@@ -331,8 +331,13 @@ export const orderService = {
   async submitCredentials(
     orderId: string,
     workerId: string,
-    credentials: { email: string; password: string; notes?: string }
+    credentials: { email: string; password: string; notes?: string },
+    acknowledgedNoPhone: boolean
   ): Promise<IOrder> {
+    if (!acknowledgedNoPhone) {
+      throwErr('You must confirm this account has no phone number linked before submitting.', 400);
+    }
+
     const order = await Order.findOne({ _id: orderId, workerId, status: 'accepted' });
     if (!order) throwErr('Order not found or not in accepted state.', 404);
 
@@ -386,11 +391,11 @@ export const orderService = {
   },
 
   // ── Customer: submit the verification number they see on their Google
-  //    "new device" login screen. Replaces the old "request code" step —
-  //    the customer submits the number directly, no separate request needed.
-  //    Also used to RESUBMIT if the previous number expired (Google numbers
-  //    are only valid ~1 minute) — that's why it also accepts the order
-  //    already being in 'verification_pending'.
+  //    "new device" login screen — for the case where Google shows a
+  //    "select this number on your other device" prompt. If Google instead
+  //    just gives a plain code, the customer uses requestVerificationCode()
+  //    below instead. Also used to RESUBMIT if the previous number expired
+  //    (Google numbers are only valid ~1 minute).
   async submitVerificationNumber(orderId: string, customerId: string, number: string): Promise<IOrder> {
     const order = await Order.findOne({
       _id: orderId, customerId,
@@ -399,6 +404,7 @@ export const orderService = {
     if (!order) throwErr('Order must have credentials submitted to send a verification number.', 400);
 
     order!.status = 'verification_pending';
+    order!.verificationMethod = 'number';
     order!.verificationCode = number.trim();
     order!.verificationConfirmed = false;
     await order!.save();
@@ -421,7 +427,8 @@ export const orderService = {
   //    is just relaying the customer's real-world confirmation status.
   async confirmVerificationNumber(orderId: string, workerId: string): Promise<IOrder> {
     const order = await Order.findOne({
-      _id: orderId, workerId, status: 'verification_pending', verificationCode: { $exists: true, $ne: null },
+      _id: orderId, workerId, status: 'verification_pending',
+      verificationMethod: 'number', verificationCode: { $exists: true, $ne: null },
     });
     if (!order) throwErr('Order not found, not in verification state, or no number submitted yet.', 400);
 
@@ -438,6 +445,60 @@ export const orderService = {
     });
 
     emitToUser(customerId, EVENTS.NUMBER_CONFIRMED, { orderId });
+    return order!;
+  },
+
+  // ── Customer: request an actual CODE instead — for the case where Google
+  //    doesn't show the "select a number" prompt and just gives/texts a
+  //    plain code instead. The worker (who has access to the account, e.g.
+  //    via an authenticator app or the recovery contact) sends that code
+  //    back below.
+  async requestVerificationCode(orderId: string, customerId: string): Promise<IOrder> {
+    const order = await Order.findOne({
+      _id: orderId, customerId,
+      status: { $in: ['credentials_submitted', 'verification_pending'] },
+    });
+    if (!order) throwErr('Order must have credentials submitted to request a code.', 400);
+
+    order!.status = 'verification_pending';
+    order!.verificationMethod = 'code';
+    order!.verificationCode = undefined;
+    order!.verificationConfirmed = false;
+    await order!.save();
+
+    const workerId = order!.workerId!.toString();
+    await notificationService.create({
+      userId:  workerId,
+      title:   '🔑 Verification Code Requested',
+      message: 'The customer needs a login code for this account — check for it and send it in the app.',
+      type:    'verification',
+      orderId: order!._id,
+    });
+
+    emitToUser(workerId, EVENTS.CODE_REQUESTED, { orderId });
+    return order!;
+  },
+
+  // ── Worker: send the actual code back to the customer ─────────────────
+  async submitVerificationCode(orderId: string, workerId: string, code: string): Promise<IOrder> {
+    const order = await Order.findOne({
+      _id: orderId, workerId, status: 'verification_pending', verificationMethod: 'code',
+    });
+    if (!order) throwErr('Order not found, not in verification state, or no code was requested.', 400);
+
+    order!.verificationCode = code.trim();
+    await order!.save();
+
+    const customerId = order!.customerId.toString();
+    await notificationService.create({
+      userId:  customerId,
+      title:   '✅ Verification Code Received',
+      message: 'The worker sent your login code. Open your order to view it.',
+      type:    'verification',
+      orderId: order!._id,
+    });
+
+    emitToUser(customerId, EVENTS.CODE_RECEIVED, { orderId, code: code.trim() });
     return order!;
   },
 
