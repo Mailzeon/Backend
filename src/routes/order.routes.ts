@@ -4,11 +4,12 @@ import { requireRole, requireApprovedWorker } from '../middleware/role.middlewar
 import { validate } from '../middleware/validate.middleware';
 import {
   createOrderSchema, submitCredentialsSchema,
-  submitNumberSchema, reportProblemSchema,
+  submitNumberSchema, submitCodeSchema, reportProblemSchema,
 } from '../validators/order.validator';
 import {
   createOrder, cancelOrder, getMarketplace, acceptOrder, submitCredentials,
   submitVerificationNumber, confirmVerificationNumber,
+  requestVerificationCode, submitVerificationCode,
   confirmSuccess, reportProblem, getOrder, getMyOrders, getAssignedOrders,
 } from '../controllers/order.controller';
 
@@ -20,6 +21,7 @@ router.post('/',                      requireRole('customer'), validate(createOr
 router.get('/my',                     requireRole('customer'), getMyOrders);
 router.patch('/:id/cancel',           requireRole('customer'), cancelOrder);
 router.patch('/:id/submit-number',    requireRole('customer'), validate(submitNumberSchema), submitVerificationNumber);
+router.patch('/:id/request-code',     requireRole('customer'), requestVerificationCode);
 router.patch('/:id/confirm',          requireRole('customer'), confirmSuccess);
 router.patch('/:id/dispute',          requireRole('customer'), validate(reportProblemSchema), reportProblem);
 
@@ -29,6 +31,7 @@ router.get('/assigned',               requireRole('worker'), getAssignedOrders);
 router.patch('/:id/accept',           requireApprovedWorker, acceptOrder);
 router.patch('/:id/credentials',      requireApprovedWorker, validate(submitCredentialsSchema), submitCredentials);
 router.patch('/:id/confirm-number',   requireApprovedWorker, confirmVerificationNumber);
+router.patch('/:id/submit-code',      requireApprovedWorker, validate(submitCodeSchema), submitVerificationCode);
 
 // Shared
 router.get('/:id',                    requireRole('customer','worker','admin'), getOrder);
