@@ -346,6 +346,40 @@ router.get('/wallet-transactions', async (req: Request, res: Response) => {
   sendSuccess(res, 'Wallet transactions fetched.', transactions);
 });
 
+// ── Referral program monitoring ─────────────────────────────────────────
+// Platform-wide view of every worker who referred someone, how many
+// they've referred, and total payouts — the per-worker "Refer & Earn" page
+// (see user.routes.ts /me/referral) only shows one person's own numbers.
+router.get('/referrals', async (_req: Request, res: Response) => {
+  const referrers = await User.find({ role: 'worker' })
+    .select('name email referralCode')
+    .lean();
+
+  const withReferrals = await Promise.all(
+    referrers
+      .filter(r => r.referralCode)
+      .map(async r => {
+        const referred = await User.find({ referredBy: r._id }).select('name createdAt').lean();
+        if (referred.length === 0) return null;
+
+        const totalPaidAgg = await Transaction.aggregate([
+          { $match: { userId: r._id, type: 'credit', description: /^Referral bonus/, status: 'completed' } },
+          { $group: { _id: null, total: { $sum: '$amount' } } },
+        ]);
+
+        return {
+          referrer: { _id: r._id, name: r.name, email: r.email, referralCode: r.referralCode },
+          referredCount: referred.length,
+          referred,
+          totalPaid: totalPaidAgg[0]?.total ?? 0,
+        };
+      })
+  );
+
+  const result = withReferrals.filter(Boolean).sort((a: any, b: any) => b.totalPaid - a.totalPaid);
+  sendSuccess(res, 'Referrals fetched.', result);
+});
+
 // ── Withdrawals ───────────────────────────────────────────────────────────────
 router.get('/withdrawals', async (_req: Request, res: Response) => {
   const reqs = await withdrawalService.getAllRequests();
