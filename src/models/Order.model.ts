@@ -43,6 +43,17 @@ export interface IOrder extends Document {
   // this only affects how the CUSTOMER's payment was split.
   walletAmountApplied: number;
 
+  // NEW — referral tax (see wallet.service.ts settleOrderEarnings()).
+  // Locked in at ACCEPT time (once we finally know which worker is doing
+  // the work) rather than at order creation, same reasoning as
+  // commissionRate above: the referral tax setting could change later, but
+  // this order should always pay out at the rate that applied when the
+  // worker actually took the job. Only set when the accepting worker was
+  // themselves referred by another worker.
+  referralTaxRate?: number;   // percentage, e.g. 3
+  referralTaxAmount?: number; // rupees, deducted from workerEarning
+  referrerId?: Types.ObjectId; // who receives referralTaxAmount
+
   // The exact email address the customer wants created for this order.
   // Only set when emailType === 'custom'. For 'random' orders this is left
   // undefined on purpose — see `domain` and `emailType` below — the worker
@@ -182,6 +193,10 @@ const OrderSchema = new Schema<IOrder>(
       default: 0,
       min: [0, 'Wallet amount applied cannot be negative'],
     },
+
+    referralTaxRate: { type: Number },
+    referralTaxAmount: { type: Number },
+    referrerId: { type: Schema.Types.ObjectId, ref: 'User' },
 
     requestedEmail: {
       type: String,
