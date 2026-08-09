@@ -48,13 +48,13 @@ async function autoCompleteAbandonedByCustomer(now: Date): Promise<void> {
     $or: [
       // Worker delivered credentials, customer never responded at all.
       { status: 'credentials_submitted' },
-      // Worker delivered credentials AND already confirmed the Google
-      // verification number on their device — the ball is back in the
-      // CUSTOMER's court from that point on, same as credentials_submitted.
-      // (Added alongside the Gmail-verification flow rework — previously
-      // this state didn't exist, so autoCancelUnresponsiveWorker below
-      // would have wrongly blamed an already-responsive worker.)
-      { status: 'verification_pending', verificationConfirmed: true },
+      // 'number' method: worker already confirmed the Google verification
+      // number on their device — the ball is back in the CUSTOMER's court
+      // from that point on, same as credentials_submitted.
+      { status: 'verification_pending', verificationMethod: 'number', verificationConfirmed: true },
+      // 'code' method: worker already sent the login code back — same
+      // idea, ball is with the customer now.
+      { status: 'verification_pending', verificationMethod: 'code', verificationCode: { $exists: true, $ne: null } },
     ],
   });
 
@@ -118,16 +118,20 @@ async function autoCompleteAbandonedByCustomer(now: Date): Promise<void> {
 // ── Worker never confirmed the customer's verification number — cancel + refund the customer ─────
 async function autoCancelUnresponsiveWorker(now: Date): Promise<void> {
   const stuckOrders = await Order.find({
-    status:         'verification_pending',
-    // Only orders where the WORKER is genuinely the one holding things up —
-    // if they already confirmed the number, autoCompleteAbandonedByCustomer
-    // above handles it instead (worker gets paid, not cancelled).
-    verificationConfirmed: { $ne: true },
+    status: 'verification_pending',
     autoCompleteAt: { $lte: now },
+    // Only orders where the WORKER is genuinely the one holding things up —
+    // if they already responded (confirmed the number / sent the code),
+    // autoCompleteAbandonedByCustomer above handles it instead (worker
+    // gets paid, not cancelled).
+    $or: [
+      { verificationMethod: 'number', verificationConfirmed: { $ne: true } },
+      { verificationMethod: 'code', verificationCode: null },
+    ],
   });
 
   if (stuckOrders.length === 0) return;
-  console.log(`⚡ Auto-cancelling ${stuckOrders.length} order(s) (worker unresponsive to code request)...`);
+  console.log(`⚡ Auto-cancelling ${stuckOrders.length} order(s) (worker unresponsive to verification request)...`);
 
   for (const order of stuckOrders) {
     try {
@@ -135,15 +139,18 @@ async function autoCancelUnresponsiveWorker(now: Date): Promise<void> {
       const workerId   = order.workerId.toString();
       const customerId = order.customerId.toString();
       const orderRef   = order._id.toString().slice(-6).toUpperCase();
+      const reasonLabel = order.verificationMethod === 'code'
+        ? "did not send the customer's requested verification code"
+        : "did not confirm the customer's verification number";
 
       order.status = 'cancelled';
       await order.save();
 
       // Reverse the worker's pending earnings — they never actually finished
-      // the job (never confirmed the customer's verification number).
+      // the job (never responded to the customer's live verification request).
       await walletService.reversePendingEarnings(
         workerId, order.workerEarning, order._id,
-        `Reversed: Order #${orderRef} (worker unresponsive to verification number)`
+        `Reversed: Order #${orderRef} (worker unresponsive to verification request)`
       );
 
       // Kept as an audit-trail record so admin can see why this was
@@ -155,9 +162,9 @@ async function autoCancelUnresponsiveWorker(now: Date): Promise<void> {
         customerId: order.customerId,
         workerId,
         reason: 'other',
-        description: 'Auto-resolved by system: worker did not confirm the customer\'s verification number within 24 hours.',
+        description: `Auto-resolved by system: worker ${reasonLabel} within 24 hours.`,
         status: 'resolved',
-        adminNote: 'Auto-resolved — worker unresponsive to verification number.',
+        adminNote: `Auto-resolved — worker ${reasonLabel}.`,
         resolvedAt: now,
       });
 
@@ -165,20 +172,20 @@ async function autoCancelUnresponsiveWorker(now: Date): Promise<void> {
       // "go request a UPI refund and wait for admin" flow.
       await walletService.creditRefund(
         customerId, order.amount, order._id,
-        `Refund: Order #${orderRef} (worker unresponsive to verification number)`
+        `Refund: Order #${orderRef} (worker unresponsive to verification request)`
       );
 
       await Promise.all([
         Notification.create({
           userId: workerId,
           title:  'Order Cancelled — No Response',
-          message: `Order #${orderRef} was cancelled after you didn't confirm the customer's verification number within 24 hours. Your pending earnings for this order have been reversed.`,
+          message: `Order #${orderRef} was cancelled because you ${reasonLabel} within 24 hours. Your pending earnings for this order have been reversed.`,
           type: 'dispute', orderId: order._id, isRead: false, createdAt: now,
         }),
         Notification.create({
           userId: customerId,
           title:  '💰 Refund Credited',
-          message: `The worker didn't confirm your verification number, so Order #${orderRef} was cancelled. ₹${order.amount} has been credited to your Mailzeon wallet — use it on your next order.`,
+          message: `The worker ${reasonLabel}, so Order #${orderRef} was cancelled. ₹${order.amount} has been credited to your Mailzeon wallet — use it on your next order.`,
           type: 'dispute', orderId: order._id, isRead: false, createdAt: now,
         }),
       ]);
