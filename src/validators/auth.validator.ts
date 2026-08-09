@@ -15,6 +15,9 @@ export const registerSchema = z.object({
   role: z.enum(['customer', 'worker'], {
     errorMap: () => ({ message: 'Role must be customer or worker' }),
   }),
+  // Optional — invalid/unknown codes are silently ignored at the service
+  // layer (see auth.service.ts register()), never rejected here.
+  referralCode: z.string().trim().max(20).optional(),
 });
 
 export const loginSchema = z.object({
