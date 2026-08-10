@@ -235,4 +235,70 @@ export const userService = {
 
     return { strikeCount: newStrikeCount, lockedUntil };
   },
+
+  // ── Suspected email theft — accept, sit on it, keep the account ────────
+  // Called from order.service.ts handleAcceptTimerExpiry() when a worker's
+  // 10-minute credential timer expires on a CUSTOM-email order AND the
+  // requested address turns out to already exist (see
+  // utils/emailVerification.ts). Much stronger evidence than a normal
+  // dispute, so it skips the escalating tiers entirely and jumps straight
+  // to the harshest one — reuses the SAME strikeLockHours4Plus setting
+  // used for repeat dispute offenders, no new setting needed.
+  async applyTheftPenalty(workerId: string, orderId: string, requestedEmail: string): Promise<void> {
+    const worker = await User.findById(workerId);
+    if (!worker || worker.role !== 'worker') return;
+
+    const newStrikeCount = Math.max(worker.strikeCount ?? 0, 4);
+    const hours = parseInt(await getSetting('strikeLockHours4Plus', '168'), 10) || 168;
+    const lockedUntil = new Date(Date.now() + hours * 60 * 60 * 1000);
+
+    worker.strikeCount  = newStrikeCount;
+    worker.lockedUntil  = lockedUntil;
+    worker.lastStrikeAt = new Date();
+    await worker.save();
+
+    const ips = [worker.registrationIp, worker.lastLoginIp].filter(Boolean) as string[];
+    await Promise.all(
+      Array.from(new Set(ips)).map(ip =>
+        LockedIp.findOneAndUpdate(
+          { ip },
+          { ip, workerId: worker._id, lockedUntil, strikeCount: newStrikeCount },
+          { upsert: true }
+        )
+      )
+    );
+
+    const hoursLabel = hours >= 24 ? `${Math.round(hours / 24)} day(s)` : `${hours} hour(s)`;
+    await notificationService.create({
+      userId: worker._id,
+      title: '🚨 Account Locked — Suspected Account Theft',
+      message:
+        `You accepted an order requesting a specific email, but didn't submit credentials within the ` +
+        `time limit — and that exact address now appears to exist. Your account is locked for ${hoursLabel} ` +
+        `while this is reviewed.`,
+      type: 'dispute',
+    });
+
+    // Unlike a normal 4+ dispute-strike notice, this always alerts admins
+    // immediately regardless of prior strike count — the evidence here is
+    // strong enough on its own to warrant a look, even for a first-time
+    // offender with no dispute history at all.
+    const admins = await User.find({ role: 'admin' }).select('_id');
+    await Promise.all(admins.map(a => notificationService.create({
+      userId: a._id,
+      title: `🚨 Suspected Email Theft: ${worker.name}`,
+      message:
+        `${worker.name} accepted order #${orderId.slice(-6).toUpperCase()} requesting ${requestedEmail}, ` +
+        `never submitted credentials, and that address now appears to exist. Locked for ${hoursLabel} pending review — ` +
+        `consider a permanent suspension from Users → this worker's profile if confirmed.`,
+      type: 'dispute',
+      orderId,
+    })));
+
+    if (worker.isOnline) {
+      pushLiveWorkerCount().catch(err =>
+        console.error('[UserService] Failed to refresh worker count after theft penalty:', err)
+      );
+    }
+  },
 };
