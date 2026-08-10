@@ -11,6 +11,7 @@ import { notificationService }  from './notification.service';
 import { workerLevelService }   from './workerLevel.service';
 import { paymentService }       from './payment.service';
 import { startOrderTimer, clearOrderTimer } from '../utils/orderTimer';
+import { checkEmailExists } from '../utils/emailVerification';
 import { emitToUser, emitToMarketplace, EVENTS } from '../socket/events';
 
 const throwErr = (msg: string, code = 400): never => {
@@ -106,6 +107,21 @@ export const orderService = {
     const requestedEmail = emailType === 'custom'
       ? `${customLocalPart!.trim().toLowerCase()}@${domain}`
       : undefined;
+
+    // For custom requests, check up front that this exact address doesn't
+    // already exist — two reasons: (1) saves the customer from paying for
+    // an order nobody could ever fulfill, and (2) establishes a clean
+    // baseline for the theft check later (see utils/orderTimer.ts
+    // handleOrderTimerExpiry()) — if it's confirmed to NOT exist now, then
+    // existing right after a worker abandons it is meaningful evidence,
+    // not a false alarm from an address that was already taken before
+    // this order ever existed.
+    if (requestedEmail) {
+      const preCheck = await checkEmailExists(requestedEmail);
+      if (preCheck === 'valid') {
+        throwErr('This email address is already taken. Please choose a different name.', 409);
+      }
+    }
 
     const customer = await User.findById(customerId);
     if (!customer) throwErr('Customer not found.', 404);
