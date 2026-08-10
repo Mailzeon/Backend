@@ -268,6 +268,22 @@ export const orderService = {
     return `${visible}••••••@${domain}`;
   },
 
+  // Worker-facing order responses must NEVER reveal that a referral
+  // deduction happened — no tax rate, no raw/gross figure to compare
+  // against, nothing. workerEarning is silently replaced with the net
+  // amount so the order looks completely indistinguishable from one with
+  // no referral involved at all. Only ever called on worker-facing paths —
+  // admin/dispute views intentionally keep the real fields.
+  applyReferralDeduction(orderObj: any): any {
+    if (orderObj.referralTaxAmount) {
+      orderObj.workerEarning = Math.round((orderObj.workerEarning - orderObj.referralTaxAmount) * 100) / 100;
+    }
+    delete orderObj.referralTaxAmount;
+    delete orderObj.referralTaxRate;
+    delete orderObj.referrerId;
+    return orderObj;
+  },
+
   async getMarketplaceOrders(workerId: string): Promise<IOrder[]> {
     const [orders, worker] = await Promise.all([
       Order.find({ status: 'pending', workerId: null })
@@ -278,10 +294,11 @@ export const orderService = {
     ]);
 
     // If THIS worker was referred, show every order's earning already net
-    // of the referral tax they'll actually pay — no surprise after
-    // accepting. A non-referred worker viewing the exact same order sees
-    // the full, untaxed amount; nothing on the order document itself
-    // changes here, this is purely a per-viewer display adjustment.
+    // of the referral tax they'll actually pay — completely silently, no
+    // indication a deduction happened. A non-referred worker viewing the
+    // exact same order sees the full, untaxed amount; nothing on the order
+    // document itself changes here, this is purely a per-viewer display
+    // adjustment.
     let taxRate = 0;
     if (worker?.referredBy) {
       taxRate = parseFloat(await getSetting('referralTaxRate', '3'));
@@ -293,10 +310,6 @@ export const orderService = {
       workerEarning: taxRate > 0
         ? Math.round(o.workerEarning * (1 - taxRate / 100) * 100) / 100
         : o.workerEarning,
-      // Sent alongside (not replacing workerEarning) purely so the
-      // frontend can show "X% referral fee already deducted" transparently
-      // instead of the worker just seeing a smaller number with no context.
-      appliedReferralTaxRate: taxRate > 0 ? taxRate : undefined,
     }));
 
     return adjusted as unknown as IOrder[];
@@ -365,7 +378,7 @@ export const orderService = {
     });
 
     emitToUser(customerId, EVENTS.ORDER_ACCEPTED, { orderId, workerName });
-    return order!;
+    return orderService.applyReferralDeduction(order!.toObject()) as unknown as IOrder;
   },
 
   // ── Worker: submit credentials ────────────────────────────────────────────
@@ -428,7 +441,7 @@ export const orderService = {
     });
 
     emitToUser(customerId, EVENTS.CREDENTIALS_READY, { orderId });
-    return order!;
+    return orderService.applyReferralDeduction(order!.toObject()) as unknown as IOrder;
   },
 
   // ── Customer: submit the verification number they see on their Google
@@ -486,7 +499,7 @@ export const orderService = {
     });
 
     emitToUser(customerId, EVENTS.NUMBER_CONFIRMED, { orderId });
-    return order!;
+    return orderService.applyReferralDeduction(order!.toObject()) as unknown as IOrder;
   },
 
   // ── Customer: request an actual CODE instead — for the case where Google
@@ -540,7 +553,7 @@ export const orderService = {
     });
 
     emitToUser(customerId, EVENTS.CODE_RECEIVED, { orderId, code: code.trim() });
-    return order!;
+    return orderService.applyReferralDeduction(order!.toObject()) as unknown as IOrder;
   },
 
   // ── Customer: confirm successful login ────────────────────────────────────
@@ -698,7 +711,7 @@ export const orderService = {
       delete (safe as any).amount;
       delete (safe as any).platformCommission;
       delete (safe as any).commissionRate;
-      return safe as unknown as IOrder;
+      return orderService.applyReferralDeduction(safe) as unknown as IOrder;
     }
 
     return order!;
@@ -717,6 +730,7 @@ export const orderService = {
       .sort({ createdAt: -1 })
       .select('-amount -platformCommission -commissionRate')
       .lean();
-    return orders as unknown as IOrder[];
+    const adjusted = orders.map(o => orderService.applyReferralDeduction(o));
+    return adjusted as unknown as IOrder[];
   },
 };
