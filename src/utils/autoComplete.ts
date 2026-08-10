@@ -5,6 +5,7 @@ import { walletService }      from '../services/wallet.service';
 import { paymentService }     from '../services/payment.service';
 import { workerLevelService } from '../services/workerLevel.service';
 import { userService }        from '../services/user.service';
+import { handleOrderTimerExpiry } from './orderTimer';
 import { emitToUser, EVENTS } from '../socket/events';
 
 /**
@@ -36,10 +37,36 @@ export const runAutoCompleteJob = async (): Promise<void> => {
     await autoCompleteAbandonedByCustomer(now);
     await autoCancelUnresponsiveWorker(now);
     await cleanupAbandonedPayments(now);
+    await cleanupExpiredAcceptedOrders(now);
   } catch (error) {
     console.error('[AutoComplete] Job error:', error);
   }
 };
+
+// ── Safety net for the 10-minute accept-timer (see utils/orderTimer.ts) ────
+// That timer lives in-process (a plain setTimeout) — if the server
+// restarts or goes to sleep (Render free tier) while an order is sitting
+// in 'accepted' state, the timer is gone forever and the order would
+// otherwise stay stuck, never returning to the marketplace. This sweep
+// catches anything whose timerExpiresAt has already passed and runs it
+// through the exact same handleOrderTimerExpiry() logic — including the
+// suspected-theft check — as if the in-process timer had fired normally.
+async function cleanupExpiredAcceptedOrders(now: Date): Promise<void> {
+  const stuck = await Order.find({ status: 'accepted', timerExpiresAt: { $lte: now } });
+  if (stuck.length === 0) return;
+
+  console.log(`⚡ Cleaning up ${stuck.length} accepted order(s) with an expired (lost) timer...`);
+  for (const order of stuck) {
+    if (!order.workerId) continue;
+    try {
+      await handleOrderTimerExpiry(
+        order._id.toString(), order.workerId.toString(), order.customerId.toString()
+      );
+    } catch (err) {
+      console.error(`[AutoComplete] Failed to clean up accepted order ${order._id.toString()}:`, err);
+    }
+  }
+}
 
 // ── Customer never responded — pay the worker (unchanged behavior) ─────────────
 async function autoCompleteAbandonedByCustomer(now: Date): Promise<void> {
