@@ -44,8 +44,9 @@ const generateReferralCode = (): string => {
 
 // Retries on the astronomically-unlikely event of a collision — findOne
 // check keeps this safe without relying on a race-prone "generate once and
-// hope" approach.
-const generateUniqueReferralCode = async (): Promise<string> => {
+// hope" approach. Exported so user.routes.ts can lazily backfill a code
+// for workers who registered before this feature existed.
+export const generateUniqueReferralCode = async (): Promise<string> => {
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = generateReferralCode();
     const exists = await User.findOne({ referralCode: code }).select('_id').lean();
