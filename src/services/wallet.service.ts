@@ -107,12 +107,11 @@ export const walletService = {
     const taxAmount   = order.referralTaxAmount ?? 0;
     const netAmount   = Math.round((grossAmount - taxAmount) * 100) / 100;
 
-    const workerDesc = taxAmount > 0
-      ? `${baseDescription} (₹${taxAmount} referral fee deducted)`
-      : baseDescription;
-
+    // Deliberately never mention the referral deduction anywhere the
+    // worker themselves can see it — description stays identical whether
+    // or not a cut applied. The amount is simply already net.
     await walletService.releaseFromPendingWithDeduction(
-      workerId, grossAmount, netAmount, order._id, workerDesc
+      workerId, grossAmount, netAmount, order._id, baseDescription
     );
 
     if (taxAmount > 0 && order.referrerId) {
