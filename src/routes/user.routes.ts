@@ -9,6 +9,7 @@ import { Order } from '../models/Order.model';
 import { Transaction } from '../models/Transaction.model';
 import { sendSuccess, sendError } from '../utils/response';
 import { userService } from '../services/user.service';
+import { generateUniqueReferralCode } from '../services/auth.service';
 
 const router = Router();
 router.use(authenticate);
@@ -50,7 +51,15 @@ router.post('/mark-installed', async (req: Request, res: Response) => {
 // wallet.service.ts settleOrderEarnings() for how the referral tax is
 // actually paid out on each of the referred worker's completed orders.
 router.get('/me/referral', requireRole('worker'), async (req: Request, res: Response) => {
-  const me = await User.findById(req.user!._id).select('referralCode');
+  let me = await User.findById(req.user!._id).select('referralCode');
+
+  // Backfill for workers who registered before this feature existed — they
+  // never got a referralCode assigned at signup, so generate one the first
+  // time they open this page instead of leaving it blank forever.
+  if (!me?.referralCode) {
+    const code = await generateUniqueReferralCode();
+    me = await User.findByIdAndUpdate(req.user!._id, { referralCode: code }, { new: true }).select('referralCode');
+  }
 
   const referred = await User.find({ referredBy: req.user!._id })
     .select('name createdAt')
