@@ -16,15 +16,13 @@ export type EmailCheckResult = 'valid' | 'invalid' | 'unknown';
  * order.service.ts handleAcceptTimerExpiry() for where this gets used, and
  * user.service.ts applyTheftPenalty() for the consequence.
  *
- * IMPORTANT — verify against the real API before relying on this in
- * production: the request shape below (GET, Bearer auth, a `status` field
- * of VALID/INVALID/UNKNOWN) is Email Awesome's standard documented
- * single-verification pattern, but if your dashboard's API key page shows
- * a different exact URL or header name, this is the ONLY function that
- * needs updating — nothing else in the codebase depends on the specifics.
- * Easiest way to confirm: open the "Single Verifications" page in your
- * Email Awesome dashboard, open your browser's Network tab, verify any
- * email, and compare the actual request against what's below.
+ * CONFIRMED Aug 11 2026 against Email Awesome's own docs
+ * (developers.emailawesome.com) and their support bot: GET request,
+ * `x-api-key` header (NOT `Authorization: Bearer` — that was the bug that
+ * made every call fail before), response has a `status` field of
+ * VALID/INVALID/UNKNOWN. If Email Awesome ever changes their API, this is
+ * the ONLY function that needs updating — nothing else in the codebase
+ * depends on the specifics.
  */
 export async function checkEmailExists(email: string): Promise<EmailCheckResult> {
   if (!env.EMAIL_AWESOME_API_KEY) {
@@ -36,7 +34,7 @@ export async function checkEmailExists(email: string): Promise<EmailCheckResult>
     const url = `https://api.emailawesome.com/v1/verify?email=${encodeURIComponent(email)}`;
     const res = await fetch(url, {
       method: 'GET',
-      headers: { Authorization: `Bearer ${env.EMAIL_AWESOME_API_KEY}` },
+      headers: { 'x-api-key': env.EMAIL_AWESOME_API_KEY },
       // Never let a slow third-party API hang order processing — this
       // check happens inline when an order's accept-timer expires, so a
       // stuck request here would stall a real customer's order.
@@ -44,12 +42,22 @@ export async function checkEmailExists(email: string): Promise<EmailCheckResult>
     });
 
     if (!res.ok) {
-      console.error(`[EmailVerification] API returned ${res.status} for the checked address.`);
+      // Log the body too (not just the status code) — if the API ever
+      // changes shape again, this one line tells us exactly what came
+      // back instead of needing another round of guessing.
+      const bodyText = await res.text().catch(() => '<unreadable>');
+      console.error(`[EmailVerification] API returned ${res.status}: ${bodyText}`);
       return 'unknown';
     }
 
-    const data = (await res.json()) as { status?: string; result?: string };
-    const status = (data.status || data.result || '').toString().toUpperCase();
+    const data = (await res.json()) as Record<string, unknown>;
+    // Be liberal in what we accept — different response shapes have shown
+    // up in Email Awesome's own docs (status/result as string, or a plain
+    // boolean `valid` field), so check all of them rather than assuming one.
+    if (typeof data.valid === 'boolean') {
+      return data.valid ? 'valid' : 'invalid';
+    }
+    const status = ((data.status as string) || (data.result as string) || '').toString().toUpperCase();
 
     if (status === 'VALID') return 'valid';
     if (status === 'INVALID') return 'invalid';
