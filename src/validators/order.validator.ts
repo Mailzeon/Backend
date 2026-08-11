@@ -66,16 +66,15 @@ export const submitCredentialsSchema = z.object({
     .trim()
     .max(1000, 'Notes must be under 1000 characters')
     .optional(),
-  // FIX: was missing here entirely. z.object() strips any key not
-  // explicitly declared in the schema by default — so the frontend's
-  // `acknowledgedNoPhone: true` was silently deleted by validate.middleware.ts
-  // (`req.body = result.data`) before it ever reached the controller. That
-  // made `acknowledgedNoPhone === true` in order.controller.ts always
-  // evaluate to false, so order.service.ts submitCredentials() rejected
-  // EVERY submission with "You must confirm this account has no phone
-  // number linked..." — regardless of whether the worker had actually
-  // checked the box.
-  acknowledgedNoPhone: z.boolean().optional(),
+  // BUG FIX: this field was missing from the schema entirely. The
+  // validate() middleware REPLACES req.body with the parsed result, so any
+  // key not listed here gets silently stripped before the controller ever
+  // sees it — the checkbox was working perfectly on the frontend, but the
+  // backend always received `undefined` regardless, causing the false
+  // "you must confirm..." rejection even when checked.
+  acknowledgedNoPhone: z.literal(true, {
+    errorMap: () => ({ message: 'You must confirm this account has no phone number linked.' }),
+  }),
 });
 
 export const submitNumberSchema = z.object({
