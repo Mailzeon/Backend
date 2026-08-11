@@ -11,6 +11,7 @@ import { Wallet } from '../models/Wallet.model';
 import { WorkerLevelModel } from '../models/WorkerLevel.model';
 import { Settings } from '../models/Settings.model';
 import { LockedIp } from '../models/LockedIp.model';
+import { PERMANENT_LOCK_DATE } from '../utils/permanentLock';
 import { notificationService } from './notification.service';
 import { clearAuthCookie } from '../utils/cookies';
 import { pushLiveWorkerCount } from '../socket/socket';
@@ -248,9 +249,13 @@ export const userService = {
     const worker = await User.findById(workerId);
     if (!worker || worker.role !== 'worker') return;
 
+    // Confirmed theft (not just a dispute) is a PERMANENT ban, not a
+    // timed lock — see permanentLock.ts. Worker's own account is locked
+    // forever, AND every IP they've ever registered/logged in from is
+    // locked forever, so a brand-new account from the same network is
+    // blocked at registration too (see auth.service.ts register()).
     const newStrikeCount = Math.max(worker.strikeCount ?? 0, 4);
-    const hours = parseInt(await getSetting('strikeLockHours4Plus', '168'), 10) || 168;
-    const lockedUntil = new Date(Date.now() + hours * 60 * 60 * 1000);
+    const lockedUntil = PERMANENT_LOCK_DATE;
 
     worker.strikeCount  = newStrikeCount;
     worker.lockedUntil  = lockedUntil;
@@ -268,14 +273,13 @@ export const userService = {
       )
     );
 
-    const hoursLabel = hours >= 24 ? `${Math.round(hours / 24)} day(s)` : `${hours} hour(s)`;
     await notificationService.create({
       userId: worker._id,
-      title: '🚨 Account Locked — Suspected Account Theft',
+      title: '🚨 Account Permanently Banned — Confirmed Account Theft',
       message:
         `You accepted an order requesting a specific email, but didn't submit credentials within the ` +
-        `time limit — and that exact address now appears to exist. Your account is locked for ${hoursLabel} ` +
-        `while this is reviewed.`,
+        `time limit — and that exact address now exists. Your account and network have been permanently ` +
+        `banned. This cannot be appealed through the app.`,
       type: 'dispute',
     });
 
@@ -286,11 +290,11 @@ export const userService = {
     const admins = await User.find({ role: 'admin' }).select('_id');
     await Promise.all(admins.map(a => notificationService.create({
       userId: a._id,
-      title: `🚨 Suspected Email Theft: ${worker.name}`,
+      title: `🚨 Confirmed Email Theft: ${worker.name}`,
       message:
         `${worker.name} accepted order #${orderId.slice(-6).toUpperCase()} requesting ${requestedEmail}, ` +
-        `never submitted credentials, and that address now appears to exist. Locked for ${hoursLabel} pending review — ` +
-        `consider a permanent suspension from Users → this worker's profile if confirmed.`,
+        `never submitted credentials, and that address now exists. Worker's account and IP(s) have been ` +
+        `permanently banned automatically. Review from Users → this worker's profile if it needs reversing.`,
       type: 'dispute',
       orderId,
     })));
