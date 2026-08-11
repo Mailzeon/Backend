@@ -506,4 +506,44 @@ router.post('/reset-test-data', async (req: Request, res: Response) => {
   });
 });
 
+// ── TEMPORARY DIAGNOSTIC — Email Awesome integration debugging ─────────────
+// Runs the exact same request Render's production network would make, but
+// returns the FULL raw response (status, headers, body) instead of just
+// logging a truncated line — lets us see things a normal app log can't,
+// like whether a WAF/CDN is intercepting the request before it reaches
+// Email Awesome's actual app (e.g. `cf-ray` header = Cloudflare in the way).
+// DELETE THIS ROUTE once the integration is confirmed working — it's
+// admin-only, but it's still hitting a third party with our real API key
+// on demand and has no business staying in the codebase long-term.
+router.get('/debug/email-verify-test', requireRole('admin'), async (req, res) => {
+  const email = (req.query.email as string) || 'test@gmail.com';
+  const apiKey = process.env.EMAIL_AWESOME_API_KEY;
+
+  if (!apiKey) {
+    return res.json({ error: 'EMAIL_AWESOME_API_KEY is not set in this environment.' });
+  }
+
+  const url = `https://api.emailawesome.com/v1/verify?email=${encodeURIComponent(email)}`;
+  try {
+    const upstream = await fetch(url, {
+      method: 'GET',
+      headers: { 'x-api-key': apiKey },
+      signal: AbortSignal.timeout(8000),
+    });
+    const bodyText = await upstream.text();
+    const headersObj: Record<string, string> = {};
+    upstream.headers.forEach((value, key) => { headersObj[key] = value; });
+
+    res.json({
+      requestUrl: url,
+      requestHeaderSent: 'x-api-key: ' + apiKey.slice(0, 4) + '...' + apiKey.slice(-4),
+      responseStatus: upstream.status,
+      responseHeaders: headersObj,
+      responseBody: bodyText.slice(0, 2000), // cap in case it's a huge HTML page
+    });
+  } catch (err: any) {
+    res.json({ requestUrl: url, error: err?.message || String(err) });
+  }
+});
+
 export default router;
