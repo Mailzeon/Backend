@@ -13,6 +13,7 @@
 import { Order } from '../models/Order.model';
 import { notificationService } from '../services/notification.service';
 import { userService } from '../services/user.service';
+import { walletService } from '../services/wallet.service';
 import { checkEmailExists } from './emailVerification';
 import { emitToMarketplace, EVENTS } from '../socket/events';
 
@@ -21,13 +22,23 @@ const timers = new Map<string, NodeJS.Timeout>();
 /**
  * Shared by both the in-process setTimeout below AND autoComplete.ts's
  * DB-level safety net — the single place an "accepted but never delivered"
- * order actually gets released back to the marketplace.
+ * order gets resolved.
  *
  * Also where the suspected-theft check lives: if this was a CUSTOM-email
  * order and that exact address now exists, this is strong evidence the
  * worker created it for themselves and just sat on the order rather than
  * ever intending to deliver it — see utils/emailVerification.ts and
  * user.service.ts applyTheftPenalty().
+ *
+ * Normal (non-theft) expiry: order goes back to 'pending' in the
+ * marketplace for another worker to pick up — the requested address is
+ * still genuinely available, so someone else can still fulfil it.
+ *
+ * CONFIRMED THEFT: the requested address is no longer available to
+ * ANYONE — the thief already created it. Re-listing the order would just
+ * strand it forever (no future worker could ever complete it), so instead
+ * the order is auto-cancelled and the customer is refunded to their
+ * wallet immediately, same as a normal cancellation.
  */
 export const handleOrderTimerExpiry = async (
   orderId: string,
@@ -38,18 +49,49 @@ export const handleOrderTimerExpiry = async (
   const order = await Order.findOne({ _id: orderId, status: 'accepted', workerId });
   if (!order) return; // Already progressed past accepted — do nothing
 
+  let theftConfirmed = false;
   if (order.emailType === 'custom' && order.requestedEmail) {
     try {
       const result = await checkEmailExists(order.requestedEmail);
       if (result === 'valid') {
+        theftConfirmed = true;
         await userService.applyTheftPenalty(workerId, order._id.toString(), order.requestedEmail);
       }
     } catch (err) {
       // Never let a verification-check failure block the order from being
-      // released back to the marketplace — the customer still needs it
-      // fulfilled either way.
+      // resolved — the customer still needs an outcome either way.
       console.error('[OrderTimer] Theft check failed:', err);
     }
+  }
+
+  const orderRef = order._id.toString().slice(-6).toUpperCase();
+
+  if (theftConfirmed) {
+    // Terminal state — this order can never be fulfilled by anyone else,
+    // so it does NOT go back to the marketplace.
+    order.status         = 'cancelled';
+    order.workerId       = undefined;
+    order.acceptedAt      = undefined;
+    order.timerExpiresAt = undefined;
+    await order.save();
+
+    await walletService.creditRefund(
+      customerId, order.amount, order._id,
+      `Refund: Order #${orderRef} (requested email was taken by the worker who accepted it — order cancelled)`
+    );
+
+    await notificationService.create({
+      userId:  customerId,
+      title:   'We\'re sorry — your order was cancelled and refunded',
+      message: `The worker who accepted your order created ${order.requestedEmail} for themselves instead ` +
+        `of delivering it to you. Their account and network have been permanently banned. Since that email ` +
+        `is no longer available to anyone, we've cancelled the order and credited ₹${order.amount} to your ` +
+        `Mailzeon wallet.`,
+      type:    'order',
+      orderId: order._id,
+    });
+
+    return;
   }
 
   order.status         = 'pending';
