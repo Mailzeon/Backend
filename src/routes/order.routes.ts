@@ -3,7 +3,7 @@ import { authenticate } from '../middleware/auth.middleware';
 import { requireRole, requireApprovedWorker } from '../middleware/role.middleware';
 import { validate } from '../middleware/validate.middleware';
 import {
-  createOrderSchema, submitCredentialsSchema,
+  createOrderSchema, submitCredentialsSchema, checkEmailSchema,
   submitNumberSchema, submitCodeSchema, reportProblemSchema,
 } from '../validators/order.validator';
 import {
@@ -11,12 +11,18 @@ import {
   submitVerificationNumber, confirmVerificationNumber,
   requestVerificationCode, submitVerificationCode,
   confirmSuccess, reportProblem, getOrder, getMyOrders, getAssignedOrders,
+  checkEmail,
 } from '../controllers/order.controller';
 
 const router = Router();
 router.use(authenticate);
 
 // Customer routes
+// NOTE: /check-email must be registered BEFORE '/:id' below — otherwise
+// Express would match it as { id: 'check-email' } on the GET /:id route.
+// It's a POST here so there's no clash either way, but keeping it grouped
+// with the other customer routes for readability.
+router.post('/check-email',           requireRole('customer'), validate(checkEmailSchema), checkEmail);
 router.post('/',                      requireRole('customer'), validate(createOrderSchema), createOrder);
 router.get('/my',                     requireRole('customer'), getMyOrders);
 router.patch('/:id/cancel',           requireRole('customer'), cancelOrder);
