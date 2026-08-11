@@ -210,13 +210,21 @@ const OrderSchema = new Schema<IOrder>(
       type: String,
       trim: true,
       lowercase: true,
-      required: true,
+      // Was `required: true` — no longer. Application code (createOrder)
+      // always sets this for new orders, so the constraint added no real
+      // protection — but it broke every order created BEFORE this field
+      // existed: any save() on one of those legacy documents (e.g. the
+      // auto-complete job trying to mark one 'completed') failed schema
+      // validation because the old document has no domain/emailType at
+      // all, permanently blocking that specific order from ever
+      // completing. See Aug 10 2026 Render logs — order 6a7225a0a48ac1dbbd6260f8.
     },
 
     emailType: {
       type: String,
       enum: ['random', 'custom'],
-      required: true,
+      // Same reasoning as domain above — no longer required at the DB
+      // level, for the same legacy-document reason.
     },
 
     credentials: {
