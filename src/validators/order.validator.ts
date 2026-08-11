@@ -51,6 +51,21 @@ export const createOrderSchema = z.object({
   { message: 'Enter your custom email name', path: ['customLocalPart'] }
 );
 
+// NEW: pre-payment availability check — customer picks a domain + custom
+// name and hits "Check" BEFORE the amount/pay step. Same shape as the
+// custom-email half of createOrderSchema above, just without the rest of
+// the order fields.
+export const checkEmailSchema = z.object({
+  domain: z.enum(EMAIL_DOMAINS, {
+    errorMap: () => ({ message: 'Select a valid email domain' }),
+  }),
+  customLocalPart: z.string()
+    .trim()
+    .toLowerCase()
+    .min(1, 'Enter a name to check')
+    .regex(/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/, 'Use only letters, numbers, dots, underscores or hyphens'),
+});
+
 export const submitCredentialsSchema = z.object({
   // These represent third-party account credentials, not the platform's
   // own login — so we keep them as plain non-empty strings, not z.string().email().
