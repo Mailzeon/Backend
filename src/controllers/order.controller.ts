@@ -1,6 +1,20 @@
 import { Request, Response } from 'express';
-import { orderService } from '../services/order.service';
+import { orderService, checkEmailAvailability } from '../services/order.service';
 import { sendSuccess, sendError } from '../utils/response';
+
+// NEW: pre-payment "Check" button — customer picks domain + name, hits
+// Check, and only sees the Pay button once this comes back available.
+// Doesn't require the rest of the order form to be filled in yet.
+export const checkEmail = async (req: Request, res: Response) => {
+  const { domain, customLocalPart } = req.body;
+  const result = await checkEmailAvailability(domain, customLocalPart);
+  const message = !result.checked
+    ? 'Could not verify right now — you can still continue.'
+    : result.available
+      ? 'This email is available.'
+      : 'This email is already taken. Please choose a different name.';
+  sendSuccess(res, message, result);
+};
 
 // REWORKED for Cashfree: now accepts a customer-set `amount` and optional
 // `phone`, and returns `paymentSessionId` (needed by the frontend to open
