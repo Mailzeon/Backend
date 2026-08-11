@@ -423,7 +423,10 @@ export const orderService = {
       // it's actually on the domain the customer chose (e.g. they picked
       // Gmail, so a Yahoo address doesn't count even though "any" account
       // is otherwise fine).
-      if (!submittedEmail.endsWith(`@${order.domain.toLowerCase()}`)) {
+      // Guard against legacy orders created before the domain field
+      // existed — nothing to validate against, so just allow it through
+      // rather than crashing on `undefined.toLowerCase()`.
+      if (order.domain && !submittedEmail.endsWith(`@${order.domain.toLowerCase()}`)) {
         throwErr(`Submitted email must be a @${order.domain} address.`, 400);
       }
     }
