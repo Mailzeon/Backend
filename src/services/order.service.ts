@@ -12,6 +12,7 @@ import { workerLevelService }   from './workerLevel.service';
 import { paymentService }       from './payment.service';
 import { startOrderTimer, clearOrderTimer } from '../utils/orderTimer';
 import { checkEmailExists } from '../utils/emailVerification';
+import { isPermanentLock } from '../utils/permanentLock';
 import { emitToUser, emitToMarketplace, EVENTS } from '../socket/events';
 
 const throwErr = (msg: string, code = 400): never => {
@@ -59,6 +60,31 @@ export const getPublicSettings = async (): Promise<{
     platformCommissionRate: parseInt(platformCommissionRate),
     orderTimerMinutes: parseInt(orderTimerMinutes),
     autoCompleteHours: parseInt(autoCompleteHours),
+  };
+};
+
+// ── Customer: pre-payment "Check" button ─────────────────────────────────────
+// Called directly from the order-creation modal's Check button, BEFORE the
+// customer sees a Pay button at all — so they never even reach payment on
+// an address someone already owns. createOrder() below calls this same
+// function again right before actually creating the order, as a second
+// safety net for the case where the customer checked once, then waited a
+// while (or someone else grabbed the address) before actually submitting.
+export const checkEmailAvailability = async (
+  domain: string,
+  customLocalPart: string
+): Promise<{ email: string; available: boolean; checked: boolean }> => {
+  const email = `${customLocalPart.trim().toLowerCase()}@${domain}`;
+  const result = await checkEmailExists(email);
+  return {
+    email,
+    // 'unknown' (API down/misconfigured/timeout) is treated as available —
+    // we never want a third-party outage to block genuine customers from
+    // ordering. `checked` tells the frontend whether this was a real
+    // verified answer or just a pass-through default, so it can show
+    // "couldn't verify, proceeding anyway" instead of a false "Available!".
+    available: result !== 'valid',
+    checked: result !== 'unknown',
   };
 };
 
@@ -119,8 +145,16 @@ export const orderService = {
     if (requestedEmail) {
       const preCheck = await checkEmailExists(requestedEmail);
       if (preCheck === 'valid') {
-        throwErr('This email address is already taken. Please choose a different name.', 409);
+        throwErr(
+          'This email address is already taken. Please choose a different name.',
+          409
+        );
       }
+      // NOTE: 'unknown' (API misconfigured/down/timeout) is intentionally
+      // allowed through — see checkEmailAvailability() above for why. The
+      // frontend's "Check" button already gave the customer a chance to
+      // verify up front; this is just the final safety net right before
+      // the order is actually created.
     }
 
     const customer = await User.findById(customerId);
@@ -338,6 +372,9 @@ export const orderService = {
     // take it until the lock expires.
     const worker = await User.findById(workerId).select('lockedUntil referredBy');
     if (worker?.lockedUntil && worker.lockedUntil > new Date()) {
+      if (isPermanentLock(worker.lockedUntil)) {
+        throwErr('Your account has been permanently banned and can no longer accept orders.', 403);
+      }
       const msRemaining = worker.lockedUntil.getTime() - Date.now();
       const hoursRemaining = Math.ceil(msRemaining / (60 * 60 * 1000));
       const label = hoursRemaining >= 24
