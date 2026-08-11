@@ -4,6 +4,7 @@ import { User } from '../models/User.model';
 import { Wallet } from '../models/Wallet.model';
 import { WorkerLevelModel } from '../models/WorkerLevel.model';
 import { LockedIp } from '../models/LockedIp.model';
+import { isPermanentLock } from '../utils/permanentLock';
 import { signToken } from '../utils/jwt';
 import { sendPasswordResetEmail } from '../utils/email';
 import { IUser, UserRole } from '../types';
@@ -70,6 +71,12 @@ export const authService = {
     if (role === 'worker' && ip) {
       const ipLock = await LockedIp.findOne({ ip, lockedUntil: { $gt: new Date() } });
       if (ipLock) {
+        if (isPermanentLock(ipLock.lockedUntil)) {
+          throwHttpError(
+            'Registration is permanently blocked from this network due to a confirmed policy violation.',
+            403
+          );
+        }
         const hoursLeft = Math.ceil((ipLock.lockedUntil.getTime() - Date.now()) / (60 * 60 * 1000));
         const label = hoursLeft >= 24 ? `${Math.ceil(hoursLeft / 24)} day(s)` : `${hoursLeft} hour(s)`;
         throwHttpError(
