@@ -3,8 +3,8 @@ import { env } from '../config/env';
 export type EmailCheckResult = 'valid' | 'invalid' | 'unknown';
 
 /**
- * Checks whether a specific email address currently exists, using Email
- * Awesome's (emailawesome.com) SMTP-level verification API.
+ * Checks whether a specific email address currently exists, using Abstract
+ * API's (abstractapi.com) Email Reputation product.
  *
  * Why this exists: a worker can accept a CUSTOM-email order (which reveals
  * the exact requested address), quietly go create that account for
@@ -16,25 +16,27 @@ export type EmailCheckResult = 'valid' | 'invalid' | 'unknown';
  * order.service.ts handleAcceptTimerExpiry() for where this gets used, and
  * user.service.ts applyTheftPenalty() for the consequence.
  *
- * CONFIRMED Aug 11 2026 against Email Awesome's own docs
- * (developers.emailawesome.com) and their support bot: GET request,
- * `x-api-key` header (NOT `Authorization: Bearer` — that was the bug that
- * made every call fail before), response has a `status` field of
- * VALID/INVALID/UNKNOWN. If Email Awesome ever changes their API, this is
- * the ONLY function that needs updating — nothing else in the codebase
- * depends on the specifics.
+ * SWITCHED Aug 12 2026 from Email Awesome to Abstract API — Email Awesome's
+ * own infrastructure was down (confirmed 503 from their AWS API Gateway,
+ * not a bug on our side) and support never replied, so we moved off it
+ * rather than keep waiting. CONFIRMED against Abstract's own public docs:
+ * GET request, API key passed as a QUERY PARAM `api_key=` (NOT a header —
+ * that's Email Awesome's pattern, don't copy it over), response has a
+ * nested `email_deliverability.status` field with values like
+ * "deliverable" / "undeliverable" / "unknown". If Abstract ever changes
+ * their API, this is the ONLY function that needs updating — nothing else
+ * in the codebase depends on the specifics.
  */
 export async function checkEmailExists(email: string): Promise<EmailCheckResult> {
-  if (!env.EMAIL_AWESOME_API_KEY) {
-    console.warn('[EmailVerification] EMAIL_AWESOME_API_KEY not set — skipping check.');
+  if (!env.ABSTRACT_API_KEY) {
+    console.warn('[EmailVerification] ABSTRACT_API_KEY not set — skipping check.');
     return 'unknown';
   }
 
   try {
-    const url = `https://api.emailawesome.com/v1/verify?email=${encodeURIComponent(email)}`;
+    const url = `https://emailreputation.abstractapi.com/v1/?api_key=${encodeURIComponent(env.ABSTRACT_API_KEY)}&email=${encodeURIComponent(email)}`;
     const res = await fetch(url, {
       method: 'GET',
-      headers: { 'x-api-key': env.EMAIL_AWESOME_API_KEY },
       // Never let a slow third-party API hang order processing — this
       // check happens inline when an order's accept-timer expires, so a
       // stuck request here would stall a real customer's order.
@@ -50,18 +52,15 @@ export async function checkEmailExists(email: string): Promise<EmailCheckResult>
       return 'unknown';
     }
 
-    const data = (await res.json()) as Record<string, unknown>;
-    // Be liberal in what we accept — different response shapes have shown
-    // up in Email Awesome's own docs (status/result as string, or a plain
-    // boolean `valid` field), so check all of them rather than assuming one.
-    if (typeof data.valid === 'boolean') {
-      return data.valid ? 'valid' : 'invalid';
-    }
-    const status = ((data.status as string) || (data.result as string) || '').toString().toUpperCase();
+    const data = (await res.json()) as {
+      email_deliverability?: { status?: string };
+    };
 
-    if (status === 'VALID') return 'valid';
-    if (status === 'INVALID') return 'invalid';
-    return 'unknown'; // includes catch-all/risky/unknown — never punish on a maybe
+    const status = (data.email_deliverability?.status || '').toString().toLowerCase();
+
+    if (status === 'deliverable') return 'valid';
+    if (status === 'undeliverable') return 'invalid';
+    return 'unknown'; // includes "unknown"/missing field — never punish on a maybe
   } catch (err) {
     console.error('[EmailVerification] Check failed:', err);
     // Fail-safe: any error (timeout, network, bad JSON) means inconclusive,
