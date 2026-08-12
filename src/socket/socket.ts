@@ -6,8 +6,13 @@ import { User }                     from '../models/User.model';
 let io: SocketIOServer;
 
 export const initSocket = (server: HttpServer): SocketIOServer => {
+  // Same multi-origin list as app.ts's HTTP CORS — kept in sync so
+  // WebSocket connections work from every live frontend domain too.
   const allowedOrigins = [
-    env.FRONTEND_URL,
+    ...env.FRONTEND_URL.split(',').map((url) => url.trim().replace(/\/$/, '')),
+    'https://mailzeon.shop',
+    'https://www.mailzeon.shop',
+    'https://mailzeon.vercel.app',
     'http://localhost:3000',
     'http://127.0.0.1:3000',
   ].filter(Boolean);
