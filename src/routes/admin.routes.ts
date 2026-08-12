@@ -213,9 +213,17 @@ router.get('/users', async (req: Request, res: Response) => {
 // ── Approve / suspend worker ──────────────────────────────────────────────────
 router.patch('/users/:id/approve', async (req: Request, res: Response) => {
   const { isApproved } = req.body;
+  const update: Record<string, unknown> = { isApproved };
+  // Once a worker has ever been approved, remember that permanently — this
+  // is what lets the Users list tell a first-time "Pending" worker apart
+  // from one who was approved and later suspended (both have isApproved:
+  // false, but only one of them should show "Suspended" + a "Reactivate"
+  // button instead of "Pending" + "Approve").
+  if (isApproved) update.wasEverApproved = true;
+
   const user = await User.findOneAndUpdate(
     { _id: req.params.id, role: 'worker' },
-    { isApproved },
+    update,
     { new: true }
   );
   if (!user) { sendError(res, 'Worker not found.', 404); return; }
