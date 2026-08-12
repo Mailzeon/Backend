@@ -75,6 +75,17 @@ export const env = {
   // Optional: the check is silently skipped (treated as inconclusive) if
   // this isn't configured, so the server still works fine without it.
   ABSTRACT_API_KEY: optional('ABSTRACT_API_KEY'),
+
+  // NEW — IP Intelligence (VPN/proxy/Tor detection), used at worker
+  // registration to flag suspicious signups for admin review — see
+  // utils/ipIntelligence.ts. Two providers, tried in order:
+  //   1. Abstract IP Intelligence (1000 free/month) — primary
+  //   2. proxycheck.io (1000 free/day with a free key, 100/day without)
+  //      — fallback once Abstract's monthly credits run out
+  // Both optional — the check is silently skipped if neither is
+  // configured, exactly like the email-verification check above.
+  ABSTRACT_IP_API_KEY: optional('ABSTRACT_IP_API_KEY'),
+  PROXYCHECK_API_KEY:  optional('PROXYCHECK_API_KEY'),
 } as const;
 
 // The single "main" domain to use for building links (payment redirects,
