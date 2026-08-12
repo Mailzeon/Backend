@@ -506,42 +506,5 @@ router.post('/reset-test-data', async (req: Request, res: Response) => {
   });
 });
 
-// ── TEMPORARY DIAGNOSTIC — Abstract API integration debugging ──────────────
-// Runs the exact same request Render's production network would make, but
-// returns the FULL raw response (status, headers, body) instead of just
-// logging a truncated line — lets us see things a normal app log can't,
-// like whether a WAF/CDN is intercepting the request before it reaches
-// Abstract's actual app.
-// DELETE THIS ROUTE once the integration is confirmed working — it's
-// admin-only, but it's still hitting a third party with our real API key
-// on demand and has no business staying in the codebase long-term.
-router.get('/debug/email-verify-test', requireRole('admin'), async (req, res) => {
-  const email = (req.query.email as string) || 'test@gmail.com';
-  const apiKey = process.env.ABSTRACT_API_KEY;
-
-  if (!apiKey) {
-    return res.json({ error: 'ABSTRACT_API_KEY is not set in this environment.' });
-  }
-
-  const url = `https://emailreputation.abstractapi.com/v1/?api_key=${encodeURIComponent(apiKey)}&email=${encodeURIComponent(email)}`;
-  try {
-    const upstream = await fetch(url, {
-      method: 'GET',
-      signal: AbortSignal.timeout(8000),
-    });
-    const bodyText = await upstream.text();
-    const headersObj: Record<string, string> = {};
-    upstream.headers.forEach((value, key) => { headersObj[key] = value; });
-
-    res.json({
-      requestUrl: url.replace(apiKey, apiKey.slice(0, 4) + '...' + apiKey.slice(-4)),
-      responseStatus: upstream.status,
-      responseHeaders: headersObj,
-      responseBody: bodyText.slice(0, 2000), // cap in case it's a huge HTML page
-    });
-  } catch (err: any) {
-    res.json({ requestUrl: url.replace(apiKey, apiKey.slice(0, 4) + '...' + apiKey.slice(-4)), error: err?.message || String(err) });
-  }
-});
 
 export default router;
