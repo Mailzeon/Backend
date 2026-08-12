@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { env } from '../config/env';
+import { env, PRIMARY_FRONTEND_URL } from '../config/env';
 import { CASHFREE_BASE_URL, cashfreeHeaders } from '../config/cashfree';
 import { Order } from '../models/Order.model';
 import { Transaction } from '../models/Transaction.model';
@@ -46,7 +46,7 @@ export const paymentService = {
     customerEmail: string,
     customerPhone: string
   ): Promise<CreateCashfreeOrderResult> {
-    const returnUrl = `${env.FRONTEND_URL}/customer/orders/${orderId}?payment=return`;
+    const returnUrl = `${PRIMARY_FRONTEND_URL}/customer/orders/${orderId}?payment=return`;
     const notifyUrl = `${env.BACKEND_URL}/api/payments/webhook`;
 
     const res = await fetch(`${CASHFREE_BASE_URL}/orders`, {
@@ -100,7 +100,7 @@ export const paymentService = {
     userPhone: string
   ): Promise<CreateCashfreeOrderResult> {
     const cashfreeOrderId = `WALLET-${transactionId}`;
-    const returnUrl = `${env.FRONTEND_URL}/customer/wallet?payment=return&txn=${transactionId}`;
+    const returnUrl = `${PRIMARY_FRONTEND_URL}/customer/wallet?payment=return&txn=${transactionId}`;
     const notifyUrl = `${env.BACKEND_URL}/api/payments/webhook`;
 
     const res = await fetch(`${CASHFREE_BASE_URL}/orders`, {
