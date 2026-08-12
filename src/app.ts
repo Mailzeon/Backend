@@ -37,8 +37,18 @@ app.use(helmet({
 }));
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
+// FRONTEND_URL can hold multiple comma-separated origins (custom domain,
+// www variant, old vercel.app domain, etc.) — this lets us support several
+// live frontend domains at once instead of only ever one at a time, and
+// avoids the site breaking every time a domain is added/removed.
+// Trailing slashes are stripped so a copy-pasted URL with a trailing "/"
+// (a common mistake) doesn't silently mismatch the browser's Origin header,
+// which never has one.
 const allowedOrigins = [
-  env.FRONTEND_URL,
+  ...env.FRONTEND_URL.split(',').map((url) => url.trim().replace(/\/$/, '')),
+  'https://mailzeon.shop',
+  'https://www.mailzeon.shop',
+  'https://mailzeon.vercel.app',
   'http://localhost:3000',
   'http://127.0.0.1:3000',
 ].filter(Boolean);
@@ -46,7 +56,8 @@ const allowedOrigins = [
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
+    const normalizedOrigin = origin.replace(/\/$/, '');
+    if (allowedOrigins.includes(normalizedOrigin)) return callback(null, true);
     callback(new Error(`CORS: Origin ${origin} not allowed`));
   },
   credentials: true,
