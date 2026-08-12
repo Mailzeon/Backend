@@ -61,12 +61,13 @@ export const env = {
   VAPID_PRIVATE_KEY: optional('VAPID_PRIVATE_KEY'),
   VAPID_SUBJECT:     optional('VAPID_SUBJECT', 'mailto:admin@mailzeon.com'),
 
-  // NEW — Email Awesome (emailawesome.com) verification API. Used to catch
-  // workers who accept a custom-email order, quietly go create that exact
-  // account for themselves outside the platform, and just let the 10-minute
-  // timer expire without ever submitting credentials — see
-  // utils/emailVerification.ts. Optional: the check is silently skipped
-  // (treated as inconclusive) if this isn't configured, so the server
-  // still works fine without it.
-  EMAIL_AWESOME_API_KEY: optional('EMAIL_AWESOME_API_KEY'),
+  // NEW — Abstract API (abstractapi.com) Email Reputation product. Used to
+  // catch workers who accept a custom-email order, quietly go create that
+  // exact account for themselves outside the platform, and just let the
+  // 10-minute timer expire without ever submitting credentials — see
+  // utils/emailVerification.ts. Switched from Email Awesome (their
+  // infrastructure went down, never came back, support never replied).
+  // Optional: the check is silently skipped (treated as inconclusive) if
+  // this isn't configured, so the server still works fine without it.
+  ABSTRACT_API_KEY: optional('ABSTRACT_API_KEY'),
 } as const;
