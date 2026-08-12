@@ -55,6 +55,18 @@ const UserSchema = new Schema<IUser>(
         return this.role !== 'worker';
       },
     },
+    // NEW: distinguishes "never approved yet" (pending, first-time signup)
+    // from "was approved, then suspended" (isApproved went true -> false).
+    // isApproved alone can't tell these apart, which made the admin panel's
+    // Users list show the exact same "Approve" button + "Pending" label for
+    // a brand-new worker AND a worker an admin had deliberately suspended —
+    // no way to tell at a glance which case you were looking at. Set true
+    // the moment isApproved is first flipped to true (see
+    // admin.routes.ts PATCH /users/:id/approve); never unset afterward.
+    wasEverApproved: {
+      type: Boolean,
+      default: false,
+    },
     level: {
       type: String,
       enum: ['bronze', 'silver', 'gold'],
