@@ -14,6 +14,8 @@ import { Wallet }             from '../models/Wallet.model';
 import { WorkerLevelModel }  from '../models/WorkerLevel.model';
 import { Transaction }        from '../models/Transaction.model';
 import { Notification }       from '../models/Notification.model';
+import { LockedIp }           from '../models/LockedIp.model';
+import { PERMANENT_LOCK_DATE } from '../utils/permanentLock';
 import { withdrawalService } from '../services/withdrawal.service';
 import { refundService }     from '../services/refund.service';
 import { disputeService }    from '../services/dispute.service';
@@ -236,6 +238,36 @@ router.patch('/users/:id/approve', async (req: Request, res: Response) => {
   // migration script needed.
   if (isApproved || existing.isApproved) update.wasEverApproved = true;
 
+  // ── Manual-suspend IP lock (closes a real evasion gap) ────────────────
+  // Previously, ONLY the automatic strike/theft-penalty paths locked a
+  // worker's IPs (see user.service.ts applyStrike()/applyTheftPenalty()).
+  // A worker an admin suspended manually — for anything strikes/theft-
+  // detection didn't automatically catch — could just sign up again from
+  // the same network with a new email and start over immediately. This
+  // mirrors the exact same lock those automatic paths apply.
+  if (!isApproved && existing.isApproved) {
+    update.lockedUntil = PERMANENT_LOCK_DATE;
+    const ips = [existing.registrationIp, existing.lastLoginIp].filter(Boolean) as string[];
+    await Promise.all(
+      Array.from(new Set(ips)).map(ip =>
+        LockedIp.findOneAndUpdate(
+          { ip },
+          { ip, workerId: existing._id, lockedUntil: PERMANENT_LOCK_DATE, strikeCount: existing.strikeCount ?? 0 },
+          { upsert: true }
+        )
+      )
+    );
+  }
+  // Reactivating a previously-suspended worker — undo the lock above so
+  // they can actually accept orders again, and release any IPs THIS
+  // suspension locked (only entries still attributed to this worker, so we
+  // don't accidentally unlock an IP a different worker's violation has
+  // since re-locked).
+  if (isApproved && !existing.isApproved) {
+    update.lockedUntil = null;
+    await LockedIp.deleteMany({ workerId: existing._id });
+  }
+
   const user = await User.findOneAndUpdate(
     { _id: req.params.id, role: 'worker' },
     update,
@@ -258,7 +290,7 @@ router.patch('/users/:id/approve', async (req: Request, res: Response) => {
     await notificationService.create({
       userId:  user._id,
       title:   '⛔ Account Suspended',
-      message: 'Your worker account has been suspended by an admin. Contact support if you believe this is a mistake.',
+      message: 'Your worker account has been suspended by an admin, and your account\'s known network(s) have been locked to prevent new signups from them. Contact support if you believe this is a mistake.',
       type:    'system',
     });
     emitToUser(user._id.toString(), EVENTS.WORKER_SUSPENDED, {});
