@@ -1,4 +1,4 @@
-import { env } from '../config/env';
+import { env, PRIMARY_FRONTEND_URL } from '../config/env';
 
 /**
  * Brevo (formerly Sendinblue) transactional email API — sends over HTTPS,
@@ -60,7 +60,7 @@ const sendEmail = async ({ to, subject, html }: SendEmailInput): Promise<void> =
  * stored in the database, only its SHA-256 hash is (see auth.service.ts).
  */
 export const sendPasswordResetEmail = async (to: string, rawToken: string): Promise<void> => {
-  const resetUrl = `${env.FRONTEND_URL}/reset-password?token=${rawToken}`;
+  const resetUrl = `${PRIMARY_FRONTEND_URL}/reset-password?token=${rawToken}`;
 
   await sendEmail({
     to,
@@ -103,7 +103,7 @@ export const sendNotificationEmail = async (to: string, title: string, message: 
       <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px;">
         <h2 style="color: #111; margin-bottom: 4px;">${title}</h2>
         <p style="color: #444; font-size: 15px; line-height: 1.5;">${message}</p>
-        <a href="${env.FRONTEND_URL}/login"
+        <a href="${PRIMARY_FRONTEND_URL}/login"
            style="display: inline-block; margin: 20px 0; padding: 10px 20px; background: #7c3aed;
                   color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px;">
           Open Mailzeon
