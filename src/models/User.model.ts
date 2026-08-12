@@ -102,6 +102,16 @@ const UserSchema = new Schema<IUser>(
     lastLoginIp: {
       type: String,
     },
+    // NEW — soft VPN/proxy/Tor signal captured at registration time (see
+    // utils/ipIntelligence.ts + auth.service.ts register()). Never blocks
+    // a signup by itself, just surfaces a warning badge for admin review
+    // on the Users page — plenty of legitimate users are on a VPN.
+    ipRiskFlag: {
+      isRisky:  { type: Boolean },
+      reasons:  [{ type: String }],
+      provider: { type: String },
+      checkedAt: { type: Date },
+    },
 
     // ── Referral program (workers only, for now) ────────────────────────────
     // See auth.service.ts register() for how these get set, and
