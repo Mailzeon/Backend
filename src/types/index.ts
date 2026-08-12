@@ -37,6 +37,7 @@ export interface IUser extends Document {
   phone?: string;
   isOnline: boolean;
   isApproved: boolean;           // Workers need admin approval before accepting orders
+  wasEverApproved?: boolean;     // Distinguishes never-approved (pending) from approved-then-suspended
   level: WorkerLevel;
   strikeCount?: number;
   lockedUntil?: Date;
