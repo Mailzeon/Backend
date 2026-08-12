@@ -8,7 +8,7 @@ import { recoverOrderTimers }   from './utils/recoverTimers';
 import { startKeepAlive }       from './utils/keepAlive';
 import { seedDefaultSettings }  from './models/Settings.model';
 import { seedAdminUser }        from './utils/seedAdmin';
-import { backfillWasEverApproved } from './utils/backfillWasEverApproved';
+import { backfillWasEverApproved } from './utils/backfillwaseverapproved';
 import { env }                  from './config/env';
 
 const server = http.createServer(app);
