@@ -213,13 +213,28 @@ router.get('/users', async (req: Request, res: Response) => {
 // ── Approve / suspend worker ──────────────────────────────────────────────────
 router.patch('/users/:id/approve', async (req: Request, res: Response) => {
   const { isApproved } = req.body;
+
+  // Fetch first — we need to know the worker's CURRENT isApproved value
+  // before overwriting it, to correctly backfill wasEverApproved.
+  const existing = await User.findOne({ _id: req.params.id, role: 'worker' });
+  if (!existing) { sendError(res, 'Worker not found.', 404); return; }
+
   const update: Record<string, unknown> = { isApproved };
   // Once a worker has ever been approved, remember that permanently — this
   // is what lets the Users list tell a first-time "Pending" worker apart
   // from one who was approved and later suspended (both have isApproved:
   // false, but only one of them should show "Suspended" + a "Reactivate"
   // button instead of "Pending" + "Approve").
-  if (isApproved) update.wasEverApproved = true;
+  //
+  // BUG FIX: workers approved before wasEverApproved existed in the schema
+  // never had it persisted as true — so suspending one of them (isApproved
+  // true -> false) with only `if (isApproved) update.wasEverApproved =
+  // true` left it unset, and they incorrectly showed "Pending" instead of
+  // "Suspended" afterward. Backfilling it here too — the moment we SEE a
+  // worker was isApproved:true right before this update — self-heals every
+  // such worker the first time an admin suspends them, no separate
+  // migration script needed.
+  if (isApproved || existing.isApproved) update.wasEverApproved = true;
 
   const user = await User.findOneAndUpdate(
     { _id: req.params.id, role: 'worker' },
