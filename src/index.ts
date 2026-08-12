@@ -8,6 +8,7 @@ import { recoverOrderTimers }   from './utils/recoverTimers';
 import { startKeepAlive }       from './utils/keepAlive';
 import { seedDefaultSettings }  from './models/Settings.model';
 import { seedAdminUser }        from './utils/seedAdmin';
+import { backfillWasEverApproved } from './utils/backfillWasEverApproved';
 import { env }                  from './config/env';
 
 const server = http.createServer(app);
@@ -18,6 +19,7 @@ const start = async (): Promise<void> => {
     await connectDatabase();
     await seedDefaultSettings();
     await seedAdminUser();
+    await backfillWasEverApproved();
     await recoverOrderTimers();
 
     server.listen(env.PORT, () => {
