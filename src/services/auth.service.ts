@@ -5,6 +5,7 @@ import { Wallet } from '../models/Wallet.model';
 import { WorkerLevelModel } from '../models/WorkerLevel.model';
 import { LockedIp } from '../models/LockedIp.model';
 import { isPermanentLock } from '../utils/permanentLock';
+import { checkIpRisk } from '../utils/ipIntelligence';
 import { signToken } from '../utils/jwt';
 import { sendPasswordResetEmail } from '../utils/email';
 import { IUser, UserRole } from '../types';
@@ -128,6 +129,18 @@ export const authService = {
         Wallet.create({ userId: user._id }),
         WorkerLevelModel.create({ workerId: user._id }),
       ]);
+
+      // Fire-and-forget: VPN/proxy/Tor check for admin visibility (see
+      // utils/ipIntelligence.ts). Deliberately NOT awaited — the provider
+      // calls can take a couple seconds each, and this is a soft
+      // review-flag, not something that should ever delay a real user's
+      // signup response. checkIpRisk() itself never throws (fails open
+      // internally), so no unhandled-rejection risk here.
+      if (ip) {
+        checkIpRisk(ip)
+          .then(result => User.findByIdAndUpdate(user._id, { ipRiskFlag: result }))
+          .catch(err => console.error('[Auth] Background IP risk check failed:', err));
+      }
     }
 
     const token = signToken(user._id, user.role as UserRole);
