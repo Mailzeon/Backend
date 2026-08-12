@@ -44,6 +44,12 @@ export interface IUser extends Document {
   lastStrikeAt?: Date;
   registrationIp?: string;
   lastLoginIp?: string;
+  ipRiskFlag?: {
+    isRisky?: boolean;
+    reasons?: string[];
+    provider?: string;
+    checkedAt?: Date;
+  };
   referralCode?: string;
   referredBy?: Types.ObjectId | string;
   upiId?: string;
