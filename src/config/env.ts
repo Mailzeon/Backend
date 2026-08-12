@@ -24,6 +24,11 @@ export const env = {
   CLOUDINARY_API_KEY:    optional('CLOUDINARY_API_KEY'),
   CLOUDINARY_API_SECRET: optional('CLOUDINARY_API_SECRET'),
 
+  // Can hold multiple comma-separated origins (used for CORS in app.ts /
+  // socket.ts so several live frontend domains work at once). For anything
+  // that needs to build a single clickable link (payment return URLs,
+  // password-reset emails), use PRIMARY_FRONTEND_URL below instead — it's
+  // always just the first (main) domain in the list.
   FRONTEND_URL: optional('FRONTEND_URL', 'http://localhost:3000'),
 
   // NEW — Cashfree Payment Gateway (production keys).
@@ -71,3 +76,10 @@ export const env = {
   // this isn't configured, so the server still works fine without it.
   ABSTRACT_API_KEY: optional('ABSTRACT_API_KEY'),
 } as const;
+
+// The single "main" domain to use for building links (payment redirects,
+// email URLs). Just the first entry of FRONTEND_URL, trailing slash removed.
+export const PRIMARY_FRONTEND_URL = env.FRONTEND_URL
+  .split(',')[0]
+  .trim()
+  .replace(/\/$/, '');
