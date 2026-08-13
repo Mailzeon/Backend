@@ -10,6 +10,7 @@ import { Transaction } from '../models/Transaction.model';
 import { sendSuccess, sendError } from '../utils/response';
 import { userService } from '../services/user.service';
 import { generateUniqueReferralCode } from '../services/auth.service';
+import { verifyPhone } from '../utils/phoneVerification';
 
 const router = Router();
 router.use(authenticate);
@@ -21,11 +22,50 @@ router.use(authenticate);
 
 // Update profile / payment details
 router.put('/profile', async (req: Request, res: Response) => {
-  const { name, upiId, bankDetails } = req.body;
+  const { name, upiId, bankDetails, phone } = req.body;
   const updates: Record<string, unknown> = {};
   if (name?.trim()) updates.name = name.trim();
   if (upiId !== undefined) updates.upiId = upiId;
   if (bankDetails) updates.bankDetails = bankDetails;
+
+  // BUG FIX: `phone` was never destructured from req.body here before —
+  // the frontend has been sending it all along, but it was silently
+  // dropped on arrival, so it never actually saved via this route (it
+  // only ever got set as a side effect of placing an order — see
+  // order.service.ts createOrder()). Fixed here as part of building
+  // proper phone verification: any phone submitted through profile now
+  // gets checked via Abstract Phone Validation before being accepted, same
+  // as at registration (see utils/phoneVerification.ts). Only re-verify if
+  // it's actually changing — an unchanged phone that's already verified
+  // shouldn't burn another API credit or risk flipping to unverified on a
+  // transient provider hiccup.
+  if (typeof phone === 'string' && phone.trim()) {
+    const trimmedPhone = phone.trim();
+    if (trimmedPhone !== req.user!.phone) {
+      if (!/^[6-9]\d{9}$/.test(trimmedPhone)) {
+        sendError(res, 'Enter a valid 10-digit Indian mobile number.', 400);
+        return;
+      }
+      const phoneCheck = await verifyPhone(trimmedPhone);
+      if (phoneCheck.checkFailed) {
+        sendError(res, 'Could not verify this phone number right now. Please try again in a moment.', 503);
+        return;
+      }
+      if (!phoneCheck.isValid) {
+        sendError(
+          res,
+          phoneCheck.isVoip
+            ? 'Virtual/VOIP numbers are not accepted. Please use a real mobile number.'
+            : 'This does not appear to be a valid, active phone number.',
+          400
+        );
+        return;
+      }
+      updates.phone = trimmedPhone;
+      updates.phoneVerified = true;
+    }
+  }
+
   const user = await User.findByIdAndUpdate(req.user!._id, updates, { new: true });
   sendSuccess(res, 'Profile updated.', user);
 });
