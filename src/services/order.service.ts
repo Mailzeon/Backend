@@ -110,7 +110,6 @@ export const orderService = {
     domain: string,
     emailType: 'random' | 'custom',
     amount: number,
-    phone: string | undefined,
     customLocalPart?: string,
     useWalletCredit?: boolean
   ): Promise<{ order: IOrder; paymentSessionId: string | null; paidWithWallet: boolean }> {
@@ -160,16 +159,16 @@ export const orderService = {
     const customer = await User.findById(customerId);
     if (!customer) throwErr('Customer not found.', 404);
 
-    // Reuse saved phone, or save the newly provided one for next time.
-    let finalPhone = customer!.phone;
-    if (!finalPhone) {
-      if (!phone) {
-        throwErr('A phone number is required to process payment. Please provide one.', 400);
-      }
-      customer!.phone = phone;
-      await customer!.save();
-      finalPhone = phone;
+    // Phone is now mandatory + verified at registration/profile level (see
+    // auth.service.ts register() / user.routes.ts PUT /profile) — no more
+    // collecting/saving it here as a fallback. Any customer without a
+    // verified phone (pre-Phase-4 accounts that haven't added one yet)
+    // gets stopped here with a clear message pointing them to their
+    // profile, rather than silently failing later at the Cashfree step.
+    if (!customer!.phoneVerified || !customer!.phone) {
+      throwErr('Please add and verify a phone number in your profile before placing an order.', 400);
     }
+    const finalPhone = customer!.phone!;
 
     // NEW: pay with wallet credit (from a previous refund) — applies as
     // much of the customer's balance as covers this order, up to the full
@@ -370,7 +369,7 @@ export const orderService = {
     // Dispute-strike lock — see user.service.ts applyStrike(). A locked
     // worker still sees this order in the marketplace, they just can't
     // take it until the lock expires.
-    const worker = await User.findById(workerId).select('lockedUntil referredBy');
+    const worker = await User.findById(workerId).select('lockedUntil referredBy phone phoneVerified');
     if (worker?.lockedUntil && worker.lockedUntil > new Date()) {
       if (isPermanentLock(worker.lockedUntil)) {
         throwErr('Your account has been permanently banned and can no longer accept orders.', 403);
@@ -384,6 +383,14 @@ export const orderService = {
         `Your account is locked for ${label} due to a dispute resolved against you. You can't accept orders until the lock ends.`,
         403
       );
+    }
+
+    // Phone is mandatory + verified before a worker can accept any order —
+    // see auth.service.ts register() / user.routes.ts PUT /profile. Same
+    // gate as the customer side in createOrder() above, applied here for
+    // workers who signed up before this was required.
+    if (!worker?.phoneVerified || !worker?.phone) {
+      throwErr('Please add and verify a phone number in your profile before accepting orders.', 403);
     }
 
     const timerMinutes = parseInt(await getSetting('orderTimerMinutes', '10'));
