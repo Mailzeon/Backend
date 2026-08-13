@@ -102,6 +102,19 @@ const UserSchema = new Schema<IUser>(
     lastLoginIp: {
       type: String,
     },
+    // NEW — browser device fingerprint (see frontend lib/fingerprint.ts),
+    // captured alongside the IP above at register/login. Same anti-evasion
+    // purpose, different signal: a VPN changes the IP but not the device,
+    // and vice versa — auth.service.ts checks both LockedIp AND
+    // LockedDevice, treating a match on either as a hit. Neither is
+    // foolproof alone (clearing browser data can reset a fingerprint, a
+    // VPN changes an IP), but combined they raise the bar meaningfully.
+    registrationDevice: {
+      type: String,
+    },
+    lastLoginDevice: {
+      type: String,
+    },
     // NEW — soft VPN/proxy/Tor signal captured at registration time (see
     // utils/ipIntelligence.ts + auth.service.ts register()). Never blocks
     // a signup by itself, just surfaces a warning badge for admin review
