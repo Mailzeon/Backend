@@ -35,6 +35,7 @@ export interface IUser extends Document {
   // NEW: required by Cashfree at order-creation time; optional here since
   // existing users won't have it until they place their first order.
   phone?: string;
+  phoneVerified?: boolean;
   isOnline: boolean;
   isApproved: boolean;           // Workers need admin approval before accepting orders
   wasEverApproved?: boolean;     // Distinguishes never-approved (pending) from approved-then-suspended
