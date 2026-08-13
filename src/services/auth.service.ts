@@ -5,7 +5,7 @@ import { Wallet } from '../models/Wallet.model';
 import { WorkerLevelModel } from '../models/WorkerLevel.model';
 import { LockedIp } from '../models/LockedIp.model';
 import { LockedDevice } from '../models/LockedDevice.model';
-import { isPermanentLock } from '../utils/permanentLock';
+import { isPermanentLock, resolveEvasionLock } from '../utils/permanentLock';
 import { checkIpRisk } from '../utils/ipIntelligence';
 import { signToken } from '../utils/jwt';
 import { sendPasswordResetEmail } from '../utils/email';
@@ -67,25 +67,22 @@ export const authService = {
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) throwHttpError('An account with this email already exists.', 409);
 
-    // Anti-evasion: block a brand-new WORKER registration if EITHER the IP
-    // or the device fingerprint currently has a dispute-strike lock in
-    // effect (see user.service.ts applyStrike() / LockedIp.model.ts /
-    // LockedDevice.model.ts). Checking both and taking whichever lock is
-    // active/longer is what makes this meaningfully harder to dodge than
-    // either signal alone — a VPN changes the IP but not the device, and a
-    // fresh browser profile changes the device but not the IP. Customers
-    // aren't restricted — this penalty system only exists for worker
-    // misconduct.
+    // Anti-evasion: block a brand-new WORKER registration if the IP and/or
+    // device fingerprint currently has a dispute-strike lock in effect
+    // (see user.service.ts applyStrike() / LockedIp.model.ts /
+    // LockedDevice.model.ts). See resolveEvasionLock() in permanentLock.ts
+    // for exactly how IP and device are weighed against each other —
+    // short version: a PERMANENT ban blocks on either signal alone, but a
+    // TEMPORARY strike lock needs BOTH to agree, since IP alone is easy to
+    // coincidentally share on Indian mobile networks (CGNAT) and isn't
+    // strong enough evidence by itself. Customers aren't restricted — this
+    // penalty system only exists for worker misconduct.
     if (role === 'worker' && (ip || deviceId)) {
       const [ipLock, deviceLock] = await Promise.all([
         ip ? LockedIp.findOne({ ip, lockedUntil: { $gt: new Date() } }) : null,
         deviceId ? LockedDevice.findOne({ deviceId, lockedUntil: { $gt: new Date() } }) : null,
       ]);
-      // Whichever lock (if any) expires later wins — that's the one whose
-      // message/duration we show.
-      const lock = [ipLock, deviceLock].filter(Boolean).sort(
-        (a, b) => (b!.lockedUntil.getTime() - a!.lockedUntil.getTime())
-      )[0];
+      const lock = resolveEvasionLock(ipLock, deviceLock);
       if (lock) {
         if (isPermanentLock(lock.lockedUntil)) {
           throwHttpError(
@@ -176,21 +173,21 @@ export const authService = {
       if (ip) user!.lastLoginIp = ip;
       if (deviceId) user!.lastLoginDevice = deviceId;
 
-      // Anti-evasion, part 2: if this IP OR device has an active lock (from
-      // a DIFFERENT, previously-struck account), inherit whichever lock
-      // expires later onto whichever account is logging in right now —
-      // closes the loophole of dodging a strike by switching to an
-      // already-existing second account instead of registering a brand
-      // new one, from either a different network OR a different browser
-      // profile on the same device.
+      // Anti-evasion, part 2: if this IP and/or device has an active lock
+      // (from a DIFFERENT, previously-struck account), inherit it onto
+      // whichever account is logging in right now — closes the loophole
+      // of dodging a strike by switching to an already-existing second
+      // account instead of registering a brand new one. See
+      // resolveEvasionLock() in permanentLock.ts for why a temporary
+      // strike lock needs BOTH IP and device to match (IP alone is too
+      // easy to coincidentally share on Indian mobile networks/CGNAT),
+      // while a permanent ban inherits on either signal alone.
       if (user!.role === 'worker') {
         const [ipLock, deviceLock] = await Promise.all([
           ip ? LockedIp.findOne({ ip, lockedUntil: { $gt: new Date() } }) : null,
           deviceId ? LockedDevice.findOne({ deviceId, lockedUntil: { $gt: new Date() } }) : null,
         ]);
-        const lock = [ipLock, deviceLock].filter(Boolean).sort(
-          (a, b) => (b!.lockedUntil.getTime() - a!.lockedUntil.getTime())
-        )[0];
+        const lock = resolveEvasionLock(ipLock, deviceLock);
         if (lock && (!user!.lockedUntil || user!.lockedUntil < lock.lockedUntil)) {
           user!.lockedUntil = lock.lockedUntil;
         }
