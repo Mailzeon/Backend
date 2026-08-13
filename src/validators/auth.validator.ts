@@ -15,6 +15,12 @@ export const registerSchema = z.object({
   role: z.enum(['customer', 'worker'], {
     errorMap: () => ({ message: 'Role must be customer or worker' }),
   }),
+  // NEW — mandatory for both roles (see auth.service.ts register(), which
+  // verifies this is a real, non-VOIP number via Abstract Phone Validation
+  // before the account is even created — see utils/phoneVerification.ts).
+  phone: z.string()
+    .trim()
+    .regex(/^[6-9]\d{9}$/, 'Enter a valid 10-digit Indian mobile number'),
   // Optional — invalid/unknown codes are silently ignored at the service
   // layer (see auth.service.ts register()), never rejected here.
   referralCode: z.string().trim().max(20).optional(),
