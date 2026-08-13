@@ -30,13 +30,27 @@ const UserSchema = new Schema<IUser>(
       required: true,
     },
 
-    // NEW: required by Cashfree's Payment Gateway API (customer_details.customer_phone
-    // is mandatory on every order create call). Not required at the schema level
-    // since existing users won't have it yet — it's collected the first time a
-    // customer creates an order and saved to their profile from then on.
+    // Required going forward (see auth.validator.ts registerSchema) and
+    // verified via Abstract Phone Validation at registration time (see
+    // auth.service.ts register() / utils/phoneVerification.ts) — also
+    // satisfies Cashfree's customer_phone requirement on order creation.
+    // NOT `required: true` at the schema level on purpose, even though new
+    // signups always have one now — existing users from before this field
+    // was mandatory don't have it yet, and a hard schema requirement would
+    // break every read/save of those old documents. phoneVerified below is
+    // what createOrder()/acceptOrder() actually gate on.
     phone: {
       type: String,
       trim: true,
+    },
+    // NEW — true only once `phone` has passed verifyPhone() (real,
+    // non-VOIP number). order.service.ts createOrder() (customers) and
+    // acceptOrder() (workers) both require this before proceeding — see
+    // user.controller.ts updateProfile() for how an existing user without
+    // one adds/verifies theirs retroactively.
+    phoneVerified: {
+      type: Boolean,
+      default: false,
     },
 
     // ── Worker-specific ────────────────────────────────────────────────────
