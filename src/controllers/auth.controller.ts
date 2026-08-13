@@ -8,9 +8,9 @@ import { setAuthCookie, clearAuthCookie } from '../utils/cookies';
 // kept minimal here as the controller no longer needs to re-check them.
 
 export const register = async (req: Request, res: Response): Promise<void> => {
-  const { name, email, password, role, referralCode, deviceId } = req.body;
+  const { name, email, password, role, phone, referralCode, deviceId } = req.body;
 
-  const { user, token } = await authService.register({ name, email, password, role, referralCode, deviceId }, req.ip);
+  const { user, token } = await authService.register({ name, email, password, role, phone, referralCode, deviceId }, req.ip);
   setAuthCookie(res, token);
 
   const message = role === 'worker'
