@@ -16,11 +16,13 @@ export const checkEmail = async (req: Request, res: Response) => {
   sendSuccess(res, message, result);
 };
 
-// REWORKED for Cashfree: now accepts a customer-set `amount` and optional
-// `phone`, and returns `paymentSessionId` (needed by the frontend to open
-// Cashfree's hosted checkout) alongside the created order.
+// REWORKED for Cashfree: now accepts a customer-set `amount` and returns
+// `paymentSessionId` (needed by the frontend to open Cashfree's hosted
+// checkout) alongside the created order. Phone comes from the customer's
+// verified profile now (see order.service.ts createOrder()), no longer
+// collected per-order.
 export const createOrder = async (req: Request, res: Response) => {
-  const { serviceName, domain, emailType, customLocalPart, amount, phone, useWalletCredit } = req.body;
+  const { serviceName, domain, emailType, customLocalPart, amount, useWalletCredit } = req.body;
 
   const result = await orderService.createOrder(
     req.user!._id.toString(),
@@ -28,7 +30,6 @@ export const createOrder = async (req: Request, res: Response) => {
     domain,
     emailType,
     amount,
-    phone,
     customLocalPart,
     useWalletCredit
   );
