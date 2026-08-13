@@ -86,6 +86,15 @@ export const env = {
   // configured, exactly like the email-verification check above.
   ABSTRACT_IP_API_KEY: optional('ABSTRACT_IP_API_KEY'),
   PROXYCHECK_API_KEY:  optional('PROXYCHECK_API_KEY'),
+
+  // NEW — Abstract Phone Validation, used to require a real (non-VOIP,
+  // non-fake) phone number at registration and profile updates — see
+  // utils/phoneVerification.ts. Unlike the other Abstract keys above, this
+  // one is NOT optional in spirit: if it's missing, phone verification
+  // will fail closed (see phoneVerification.ts's checkFailed behavior) and
+  // nobody will be able to register or verify a phone at all. Must be set
+  // for the app to be usable.
+  ABSTRACT_PHONE_API_KEY: optional('ABSTRACT_PHONE_API_KEY'),
 } as const;
 
 // The single "main" domain to use for building links (payment redirects,
