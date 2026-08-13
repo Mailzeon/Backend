@@ -18,6 +18,12 @@ export const registerSchema = z.object({
   // Optional — invalid/unknown codes are silently ignored at the service
   // layer (see auth.service.ts register()), never rejected here.
   referralCode: z.string().trim().max(20).optional(),
+  // NEW — browser fingerprint from the frontend (see lib/fingerprint.ts),
+  // used alongside IP for the anti-evasion lock system (see
+  // utils/ipIntelligence.ts / LockedDevice.model.ts). MUST be declared
+  // here explicitly — this schema strips any key not listed, and this
+  // exact codebase has been bitten by that before (acknowledgedNoPhone).
+  deviceId: z.string().trim().max(200).optional(),
 });
 
 export const loginSchema = z.object({
@@ -27,6 +33,7 @@ export const loginSchema = z.object({
     .email('Enter a valid email address'),
   password: z.string()
     .min(1, 'Password is required'),
+  deviceId: z.string().trim().max(200).optional(),
 });
 
 export const changePasswordSchema = z.object({
