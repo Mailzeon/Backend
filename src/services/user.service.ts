@@ -11,6 +11,7 @@ import { Wallet } from '../models/Wallet.model';
 import { WorkerLevelModel } from '../models/WorkerLevel.model';
 import { Settings } from '../models/Settings.model';
 import { LockedIp } from '../models/LockedIp.model';
+import { LockedDevice } from '../models/LockedDevice.model';
 import { PERMANENT_LOCK_DATE } from '../utils/permanentLock';
 import { notificationService } from './notification.service';
 import { clearAuthCookie } from '../utils/cookies';
@@ -189,19 +190,28 @@ export const userService = {
     worker!.lastStrikeAt  = new Date();
     await worker!.save();
 
-    // Close the "just make a new account" loophole — lock every IP on
-    // record for this worker too, so a fresh registration or a login from
-    // the same network inherits the same lock (see auth.service.ts).
+    // Close the "just make a new account" loophole — lock every IP AND
+    // device fingerprint on record for this worker too, so a fresh
+    // registration or a login from the same network OR the same browser
+    // inherits the same lock (see auth.service.ts).
     const ips = [worker!.registrationIp, worker!.lastLoginIp].filter(Boolean) as string[];
-    await Promise.all(
-      Array.from(new Set(ips)).map(ip =>
+    const devices = [worker!.registrationDevice, worker!.lastLoginDevice].filter(Boolean) as string[];
+    await Promise.all([
+      ...Array.from(new Set(ips)).map(ip =>
         LockedIp.findOneAndUpdate(
           { ip },
           { ip, workerId: worker!._id, lockedUntil, strikeCount: newStrikeCount },
           { upsert: true }
         )
-      )
-    );
+      ),
+      ...Array.from(new Set(devices)).map(deviceId =>
+        LockedDevice.findOneAndUpdate(
+          { deviceId },
+          { deviceId, workerId: worker!._id, lockedUntil, strikeCount: newStrikeCount },
+          { upsert: true }
+        )
+      ),
+    ]);
 
     const hoursLabel = hours >= 24 ? `${Math.round(hours / 24)} day(s)` : `${hours} hour(s)`;
     await notificationService.create({
@@ -251,9 +261,10 @@ export const userService = {
 
     // Confirmed theft (not just a dispute) is a PERMANENT ban, not a
     // timed lock — see permanentLock.ts. Worker's own account is locked
-    // forever, AND every IP they've ever registered/logged in from is
-    // locked forever, so a brand-new account from the same network is
-    // blocked at registration too (see auth.service.ts register()).
+    // forever, AND every IP and device fingerprint they've ever
+    // registered/logged in from is locked forever, so a brand-new account
+    // from the same network OR browser is blocked at registration too
+    // (see auth.service.ts register()).
     const newStrikeCount = Math.max(worker.strikeCount ?? 0, 4);
     const lockedUntil = PERMANENT_LOCK_DATE;
 
@@ -263,15 +274,23 @@ export const userService = {
     await worker.save();
 
     const ips = [worker.registrationIp, worker.lastLoginIp].filter(Boolean) as string[];
-    await Promise.all(
-      Array.from(new Set(ips)).map(ip =>
+    const devices = [worker.registrationDevice, worker.lastLoginDevice].filter(Boolean) as string[];
+    await Promise.all([
+      ...Array.from(new Set(ips)).map(ip =>
         LockedIp.findOneAndUpdate(
           { ip },
           { ip, workerId: worker._id, lockedUntil, strikeCount: newStrikeCount },
           { upsert: true }
         )
-      )
-    );
+      ),
+      ...Array.from(new Set(devices)).map(deviceId =>
+        LockedDevice.findOneAndUpdate(
+          { deviceId },
+          { deviceId, workerId: worker._id, lockedUntil, strikeCount: newStrikeCount },
+          { upsert: true }
+        )
+      ),
+    ]);
 
     await notificationService.create({
       userId: worker._id,
