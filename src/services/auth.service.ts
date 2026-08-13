@@ -4,6 +4,7 @@ import { User } from '../models/User.model';
 import { Wallet } from '../models/Wallet.model';
 import { WorkerLevelModel } from '../models/WorkerLevel.model';
 import { LockedIp } from '../models/LockedIp.model';
+import { LockedDevice } from '../models/LockedDevice.model';
 import { isPermanentLock } from '../utils/permanentLock';
 import { checkIpRisk } from '../utils/ipIntelligence';
 import { signToken } from '../utils/jwt';
@@ -21,6 +22,7 @@ interface RegisterInput {
   password: string;
   role: 'customer' | 'worker';
   referralCode?: string;
+  deviceId?: string;
 }
 
 interface AuthResult {
@@ -60,28 +62,41 @@ export const generateUniqueReferralCode = async (): Promise<string> => {
 
 export const authService = {
   async register(input: RegisterInput, ip?: string): Promise<AuthResult> {
-    const { name, email, password, role, referralCode } = input;
+    const { name, email, password, role, referralCode, deviceId } = input;
 
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) throwHttpError('An account with this email already exists.', 409);
 
-    // Anti-evasion: block a brand-new WORKER registration from an IP that
-    // currently has a dispute-strike lock in effect (see user.service.ts
-    // applyStrike() / LockedIp.model.ts). Customers aren't restricted —
-    // this penalty system only exists for worker misconduct.
-    if (role === 'worker' && ip) {
-      const ipLock = await LockedIp.findOne({ ip, lockedUntil: { $gt: new Date() } });
-      if (ipLock) {
-        if (isPermanentLock(ipLock.lockedUntil)) {
+    // Anti-evasion: block a brand-new WORKER registration if EITHER the IP
+    // or the device fingerprint currently has a dispute-strike lock in
+    // effect (see user.service.ts applyStrike() / LockedIp.model.ts /
+    // LockedDevice.model.ts). Checking both and taking whichever lock is
+    // active/longer is what makes this meaningfully harder to dodge than
+    // either signal alone — a VPN changes the IP but not the device, and a
+    // fresh browser profile changes the device but not the IP. Customers
+    // aren't restricted — this penalty system only exists for worker
+    // misconduct.
+    if (role === 'worker' && (ip || deviceId)) {
+      const [ipLock, deviceLock] = await Promise.all([
+        ip ? LockedIp.findOne({ ip, lockedUntil: { $gt: new Date() } }) : null,
+        deviceId ? LockedDevice.findOne({ deviceId, lockedUntil: { $gt: new Date() } }) : null,
+      ]);
+      // Whichever lock (if any) expires later wins — that's the one whose
+      // message/duration we show.
+      const lock = [ipLock, deviceLock].filter(Boolean).sort(
+        (a, b) => (b!.lockedUntil.getTime() - a!.lockedUntil.getTime())
+      )[0];
+      if (lock) {
+        if (isPermanentLock(lock.lockedUntil)) {
           throwHttpError(
-            'Registration is permanently blocked from this network due to a confirmed policy violation.',
+            'Registration is permanently blocked due to a confirmed policy violation.',
             403
           );
         }
-        const hoursLeft = Math.ceil((ipLock.lockedUntil.getTime() - Date.now()) / (60 * 60 * 1000));
+        const hoursLeft = Math.ceil((lock.lockedUntil.getTime() - Date.now()) / (60 * 60 * 1000));
         const label = hoursLeft >= 24 ? `${Math.ceil(hoursLeft / 24)} day(s)` : `${hoursLeft} hour(s)`;
         throwHttpError(
-          `Registration is temporarily blocked from this network due to a recent policy violation. Try again in ${label}.`,
+          `Registration is temporarily blocked due to a recent policy violation. Try again in ${label}.`,
           403
         );
       }
@@ -103,11 +118,12 @@ export const authService = {
         const referrer = await User.findOne({
           referralCode: referralCode.trim().toUpperCase(),
           role: 'worker',
-        }).select('_id registrationIp lastLoginIp');
+        }).select('_id registrationIp lastLoginIp registrationDevice lastLoginDevice');
 
         if (referrer) {
           const sameIp = !!ip && (referrer.registrationIp === ip || referrer.lastLoginIp === ip);
-          if (!sameIp) {
+          const sameDevice = !!deviceId && (referrer.registrationDevice === deviceId || referrer.lastLoginDevice === deviceId);
+          if (!sameIp && !sameDevice) {
             referredBy = referrer._id;
           }
           // else: silently drop it — almost certainly a self-referral
@@ -119,6 +135,7 @@ export const authService = {
     const user = await User.create({
       name: name.trim(), email, password, role,
       registrationIp: ip, lastLoginIp: ip,
+      registrationDevice: deviceId, lastLoginDevice: deviceId,
       referralCode: newReferralCode,
       referredBy,
     });
@@ -147,7 +164,7 @@ export const authService = {
     return { user: user.toJSON(), token };
   },
 
-  async login(email: string, password: string, ip?: string): Promise<AuthResult> {
+  async login(email: string, password: string, ip?: string, deviceId?: string): Promise<AuthResult> {
     // +password because select: false in schema
     const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
     if (!user) throwHttpError('Invalid email or password.', 401);
@@ -155,18 +172,27 @@ export const authService = {
     const valid = await user!.comparePassword(password);
     if (!valid) throwHttpError('Invalid email or password.', 401);
 
-    if (ip) {
-      user!.lastLoginIp = ip;
+    if (ip || deviceId) {
+      if (ip) user!.lastLoginIp = ip;
+      if (deviceId) user!.lastLoginDevice = deviceId;
 
-      // Anti-evasion, part 2: if this IP has an active lock (from a
-      // DIFFERENT, previously-struck account), inherit that same lock onto
-      // whichever account is logging in right now — closes the loophole of
-      // dodging a strike by simply switching to an already-existing second
-      // account instead of registering a brand new one.
+      // Anti-evasion, part 2: if this IP OR device has an active lock (from
+      // a DIFFERENT, previously-struck account), inherit whichever lock
+      // expires later onto whichever account is logging in right now —
+      // closes the loophole of dodging a strike by switching to an
+      // already-existing second account instead of registering a brand
+      // new one, from either a different network OR a different browser
+      // profile on the same device.
       if (user!.role === 'worker') {
-        const ipLock = await LockedIp.findOne({ ip, lockedUntil: { $gt: new Date() } });
-        if (ipLock && (!user!.lockedUntil || user!.lockedUntil < ipLock.lockedUntil)) {
-          user!.lockedUntil = ipLock.lockedUntil;
+        const [ipLock, deviceLock] = await Promise.all([
+          ip ? LockedIp.findOne({ ip, lockedUntil: { $gt: new Date() } }) : null,
+          deviceId ? LockedDevice.findOne({ deviceId, lockedUntil: { $gt: new Date() } }) : null,
+        ]);
+        const lock = [ipLock, deviceLock].filter(Boolean).sort(
+          (a, b) => (b!.lockedUntil.getTime() - a!.lockedUntil.getTime())
+        )[0];
+        if (lock && (!user!.lockedUntil || user!.lockedUntil < lock.lockedUntil)) {
+          user!.lockedUntil = lock.lockedUntil;
         }
       }
       await user!.save();
