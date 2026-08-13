@@ -24,3 +24,44 @@ export const isPermanentLock = (lockedUntil: Date | null | undefined): boolean =
   if (!lockedUntil) return false;
   return lockedUntil.getTime() - Date.now() > PERMANENT_THRESHOLD_MS;
 };
+
+interface LockLike {
+  lockedUntil: Date;
+}
+
+/**
+ * Decides which (if any) of an IP-based lock and a device-based lock
+ * should actually be inherited by the account currently registering/
+ * logging in — see auth.service.ts register()/login().
+ *
+ * IP alone is NOT trustworthy evidence for a merely-temporary strike lock:
+ * carrier-grade NAT (very common on Indian mobile networks — Jio, Airtel)
+ * means many completely unrelated real people can share the exact same
+ * public IP at the same time. Blocking/locking a stranger's account just
+ * because a totally different worker on the same mobile network got a
+ * strike is a real false-positive risk, not a hypothetical one — this
+ * showed up in testing: an unrelated worker got a fresh 6h lock the
+ * moment a different worker on a shared network took a strike.
+ *
+ * So the rule is asymmetric on purpose:
+ *   - PERMANENT bans (confirmed theft, admin manual suspend) are a much
+ *     stronger signal — a single match on EITHER IP or device is enough to
+ *     block/inherit, same as before. These are rare, deliberate outcomes,
+ *     worth being aggressive about.
+ *   - TEMPORARY strike locks are weaker signals individually — only
+ *     inherited if BOTH the IP and the device fingerprint match. IP-only
+ *     coincidence (CGNAT) or device-only coincidence (fingerprint
+ *     collision, rare but possible) alone isn't enough on its own.
+ */
+export function resolveEvasionLock(
+  ipLock: LockLike | null,
+  deviceLock: LockLike | null
+): LockLike | null {
+  const permanent = [ipLock, deviceLock].find(l => l && isPermanentLock(l.lockedUntil));
+  if (permanent) return permanent;
+
+  if (ipLock && deviceLock) {
+    return ipLock.lockedUntil.getTime() >= deviceLock.lockedUntil.getTime() ? ipLock : deviceLock;
+  }
+  return null; // only one signal matched, on a merely-temporary lock — not enough alone
+}
