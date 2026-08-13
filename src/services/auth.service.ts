@@ -7,6 +7,7 @@ import { LockedIp } from '../models/LockedIp.model';
 import { LockedDevice } from '../models/LockedDevice.model';
 import { isPermanentLock, resolveEvasionLock } from '../utils/permanentLock';
 import { checkIpRisk } from '../utils/ipIntelligence';
+import { verifyPhone } from '../utils/phoneVerification';
 import { signToken } from '../utils/jwt';
 import { sendPasswordResetEmail } from '../utils/email';
 import { IUser, UserRole } from '../types';
@@ -21,6 +22,7 @@ interface RegisterInput {
   email: string;
   password: string;
   role: 'customer' | 'worker';
+  phone: string;
   referralCode?: string;
   deviceId?: string;
 }
@@ -62,10 +64,29 @@ export const generateUniqueReferralCode = async (): Promise<string> => {
 
 export const authService = {
   async register(input: RegisterInput, ip?: string): Promise<AuthResult> {
-    const { name, email, password, role, referralCode, deviceId } = input;
+    const { name, email, password, role, phone, referralCode, deviceId } = input;
 
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) throwHttpError('An account with this email already exists.', 409);
+
+    // Phone is mandatory for BOTH roles and must pass real-number
+    // verification before the account is created at all — see
+    // utils/phoneVerification.ts. Checked before the IP/device lock check
+    // below purely so a locked-out worker gets that (more specific) error
+    // rather than a generic phone failure, but either check failing stops
+    // registration.
+    const phoneCheck = await verifyPhone(phone);
+    if (phoneCheck.checkFailed) {
+      throwHttpError('Could not verify your phone number right now. Please try again in a moment.', 503);
+    }
+    if (!phoneCheck.isValid) {
+      throwHttpError(
+        phoneCheck.isVoip
+          ? 'Virtual/VOIP numbers are not accepted. Please use a real mobile number.'
+          : 'This does not appear to be a valid, active phone number. Please check and try again.',
+        400
+      );
+    }
 
     // Anti-evasion: block a brand-new WORKER registration if the IP and/or
     // device fingerprint currently has a dispute-strike lock in effect
@@ -131,6 +152,7 @@ export const authService = {
 
     const user = await User.create({
       name: name.trim(), email, password, role,
+      phone: phone.trim(), phoneVerified: true,
       registrationIp: ip, lastLoginIp: ip,
       registrationDevice: deviceId, lastLoginDevice: deviceId,
       referralCode: newReferralCode,
