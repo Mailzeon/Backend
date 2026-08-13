@@ -15,18 +15,25 @@ export interface PhoneCheckResult {
 
 /**
  * Verifies a phone number is real (not fake/disposable) using Abstract
- * API's Phone Validation product — 100 free requests/month.
+ * API's Phone Intelligence product — 100 free requests/month.
+ *
+ * IMPORTANT: this is a DIFFERENT Abstract product from the simpler "Phone
+ * Validation" API (phonevalidation.abstractapi.com) — Abstract issues a
+ * SEPARATE API key per product, so ABSTRACT_PHONE_API_KEY must be the key
+ * generated for Phone Intelligence specifically (app.abstractapi.com/api/
+ * phone-intelligence), or every check will fail with a 401. Confirmed via
+ * official docs (docs.abstractapi.com/api/phone-intelligence) — response
+ * is nested (phone_validation.is_valid / phone_validation.is_voip), not
+ * the flat `valid`/`line_type` shape the simpler Phone Validation product
+ * uses. Don't conflate the two.
  *
  * Unlike checkEmailExists()/checkIpRisk() elsewhere in this codebase, this
  * one is NOT fail-open by design: phone verification is a hard gate at
  * registration (see auth.service.ts register()) and profile updates (see
- * user.controller.ts updateProfile()) — a customer/worker literally cannot
- * proceed without a phone that passes this check. Whether a provider
- * outage should also block signups is a real product trade-off, not an
- * engineering default — see the `checkFailed` field, which callers use to
- * decide (current behavior: still block, see auth.service.ts, with a
- * message asking the person to try again shortly rather than pretending
- * the number is invalid).
+ * user.routes.ts PUT /profile) — a customer/worker literally cannot
+ * proceed without a phone that passes this check. See the `checkFailed`
+ * field for how a provider outage is distinguished from a genuinely
+ * invalid number.
  */
 export async function verifyPhone(phone: string): Promise<PhoneCheckResult> {
   if (!env.ABSTRACT_PHONE_API_KEY) {
@@ -36,11 +43,12 @@ export async function verifyPhone(phone: string): Promise<PhoneCheckResult> {
   }
 
   try {
-    // country=IN — every number entered on this platform is expected to be
-    // a plain 10-digit Indian mobile number (see the E.164-less regex in
-    // auth.validator.ts) with no country code prefix, so telling Abstract
-    // which country it's from is necessary for it to parse correctly.
-    const url = `https://phonevalidation.abstractapi.com/v1/?api_key=${encodeURIComponent(env.ABSTRACT_PHONE_API_KEY)}&phone=${encodeURIComponent(phone)}&country=IN`;
+    // Every number on this platform is a 10-digit Indian mobile number
+    // with no country code (see the regex in auth.validator.ts) — Phone
+    // Intelligence expects something close to E.164, so +91 is prepended
+    // here rather than relying on a country param.
+    const e164 = `+91${phone.replace(/\D/g, '')}`;
+    const url = `https://phoneintelligence.abstractapi.com/v1/?api_key=${encodeURIComponent(env.ABSTRACT_PHONE_API_KEY)}&phone=${encodeURIComponent(e164)}`;
     const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(8000) });
 
     if (!res.ok) {
@@ -50,17 +58,17 @@ export async function verifyPhone(phone: string): Promise<PhoneCheckResult> {
     }
 
     const data = (await res.json()) as {
-      valid?: boolean;
-      line_type?: string;
+      phone_validation?: { is_valid?: boolean; is_voip?: boolean };
+      phone_carrier?: { line_type?: string };
     };
 
-    const lineType = (data.line_type || '').toLowerCase();
-    const isVoip = lineType === 'voip';
+    const isVoip = !!data.phone_validation?.is_voip;
+    const isValid = !!data.phone_validation?.is_valid && !isVoip;
 
     return {
-      isValid: !!data.valid && !isVoip,
+      isValid,
       isVoip,
-      lineType: data.line_type,
+      lineType: data.phone_carrier?.line_type,
       checkFailed: false,
     };
   } catch (err) {
