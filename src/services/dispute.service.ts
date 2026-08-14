@@ -167,12 +167,27 @@ export const disputeService = {
         emitToUser(workerId,   EVENTS.ORDER_CANCELLED, { orderId: order._id });
         emitToUser(customerId, EVENTS.ORDER_CANCELLED, { orderId: order._id });
 
-        // Penalty — see user.service.ts applyStrike() for the escalating
-        // lock logic (worker still sees marketplace orders, just can't
-        // accept any until the lock expires).
-        await userService.applyStrike(workerId).catch(err =>
-          console.error('[Dispute] Failed to apply strike after resolve:', err)
-        );
+        // Penalty depends on WHAT was upheld:
+        //   'wrong_password' — the worker already had a fair, explicit
+        //     chance to fix this via the grace window (see
+        //     utils/disputeGrace.ts / order.service.ts resubmitCredentials())
+        //     before this dispute could ever have reached admin at all. A
+        //     wrong_password dispute only ever gets HERE if that window was
+        //     missed or blown a second time — so upholding it now means
+        //     CONFIRMED theft (deliberately gave a wrong/fake password),
+        //     not an honest mistake. Permanent ban, not just a strike.
+        //   everything else — regular escalating strike, as before.
+        if (dispute!.reason === 'wrong_password') {
+          await userService.applyTheftPenalty(
+            workerId, order._id.toString(), 'admin sided with customer', 'wrong_password_confirmed'
+          ).catch(err =>
+            console.error('[Dispute] Failed to apply theft penalty after resolve:', err)
+          );
+        } else {
+          await userService.applyStrike(workerId).catch(err =>
+            console.error('[Dispute] Failed to apply strike after resolve:', err)
+          );
+        }
 
       } else {
         order.status      = 'completed';
