@@ -16,6 +16,7 @@ import { Transaction }        from '../models/Transaction.model';
 import { Notification }       from '../models/Notification.model';
 import { LockedIp }           from '../models/LockedIp.model';
 import { LockedDevice }       from '../models/LockedDevice.model';
+import { ApiKeyRotationState } from '../models/ApiKeyRotationState.model';
 import { PERMANENT_LOCK_DATE } from '../utils/permanentLock';
 import { withdrawalService } from '../services/withdrawal.service';
 import { refundService }     from '../services/refund.service';
@@ -153,6 +154,36 @@ router.get('/analytics', async (_req: Request, res: Response) => {
   }
 
   sendSuccess(res, 'Analytics fetched.', days);
+});
+
+// ── Email API key rotation status (see utils/emailVerification.ts) ─────────
+// Shows how many keys are configured and which (if any) are currently
+// exhausted for the month — so you can see at a glance whether it's time
+// to add more keys, without digging through logs.
+router.get('/email-api-key-status', async (_req: Request, res: Response) => {
+  const configured = (process.env.ABSTRACT_EMAIL_API_KEYS || process.env.ABSTRACT_API_KEY || '')
+    .split(',').map(k => k.trim()).filter(Boolean);
+
+  const state = await ApiKeyRotationState.findById('abstract-email-reputation');
+  const now = new Date();
+  const exhaustedIndexes = state
+    ? Array.from(state.exhausted.entries())
+        .filter(([, until]) => until > now)
+        .map(([idx]) => Number(idx))
+    : [];
+
+  sendSuccess(res, 'Email API key rotation status fetched.', {
+    totalKeys:      configured.length,
+    exhaustedCount: exhaustedIndexes.length,
+    availableCount: configured.length - exhaustedIndexes.length,
+    // Keys themselves are never returned — only which numbered slot
+    // (1-indexed, matching the order in the comma-separated env var) is
+    // exhausted and when it resets, so nothing sensitive leaks here.
+    exhaustedSlots: exhaustedIndexes.map(i => ({
+      slot: i + 1,
+      resetsAt: state!.exhausted.get(String(i)),
+    })),
+  });
 });
 
 // ── Settings ──────────────────────────────────────────────────────────────────
