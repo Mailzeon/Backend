@@ -24,12 +24,22 @@ const UserSchema = new Schema<IUser>(
     // detection, now also run once against the signup email itself, to
     // catch fake/non-existent addresses (not just disposable domains —
     // this confirms the SPECIFIC address is actually deliverable).
-    // Soft signal, not a hard gate: 'unknown' (API inconclusive/down)
-    // never blocks registration, fail-open like every other check in this
-    // codebase — it just leaves this false rather than true.
-    emailVerified: {
-      type: Boolean,
-      default: false,
+    //
+    // TRI-STATE on purpose (not a boolean): order.service.ts createOrder()/
+    // acceptOrder() gate on this being exactly 'invalid' — an account that
+    // hasn't been checked yet, or came back inconclusive ('unknown'), is
+    // allowed through, same fail-open philosophy as every other soft check
+    // in this codebase ("never punish on a maybe"). Only a CONFIRMED bad
+    // email blocks anything. This distinction matters a lot for existing
+    // accounts from before this shipped — see the backfill
+    // (utils/backfillEmailVerification.ts), which runs gradually in the
+    // background, and email addresses can't be changed by most users
+    // anyway (see user.routes.ts PUT /profile) — someone genuinely stuck
+    // with 'unknown' would have no way to fix that if it were also
+    // blocking.
+    emailVerificationStatus: {
+      type: String,
+      enum: ['valid', 'invalid', 'unknown'],
     },
     // Set the moment a check is attempted (any outcome) — lets the
     // one-time startup backfill (see utils/backfillEmailVerification.ts)
