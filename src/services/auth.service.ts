@@ -8,6 +8,7 @@ import { LockedDevice } from '../models/LockedDevice.model';
 import { isPermanentLock, resolveEvasionLock } from '../utils/permanentLock';
 import { checkIpRisk } from '../utils/ipIntelligence';
 import { verifyPhone } from '../utils/phoneVerification';
+import { checkEmailExists } from '../utils/emailVerification';
 import { signToken } from '../utils/jwt';
 import { sendPasswordResetEmail } from '../utils/email';
 import { IUser, UserRole } from '../types';
@@ -68,6 +69,27 @@ export const authService = {
 
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) throwHttpError('An account with this email already exists.', 409);
+
+    // Email verification — same multi-key rotating Abstract Email
+    // Reputation check already used for order-time theft detection (see
+    // utils/emailVerification.ts), now also run once against the signup
+    // email itself. Catches fake/non-existent addresses specifically
+    // (typos, made-up addresses on a real domain like gmail.com) — a
+    // disposable-domain check alone wouldn't catch this, since the domain
+    // itself is perfectly real.
+    // Deliberately SOFT here, unlike phone: only a confirmed 'invalid'
+    // (undeliverable) blocks registration. 'unknown' (API inconclusive,
+    // every configured key exhausted, etc.) fails OPEN and lets
+    // registration proceed — a slow/down third party should never be able
+    // to stop real signups, unlike phone which is treated as essential
+    // enough to justify blocking on failure.
+    const emailCheck = await checkEmailExists(email);
+    if (emailCheck === 'invalid') {
+      throwHttpError(
+        'This email address does not appear to exist. Please double-check it or use a different one.',
+        400
+      );
+    }
 
     // Phone is mandatory for BOTH roles and must pass real-number
     // verification before the account is created at all — see
@@ -152,6 +174,7 @@ export const authService = {
 
     const user = await User.create({
       name: name.trim(), email, password, role,
+      emailVerified: emailCheck === 'valid', emailVerifiedCheckedAt: new Date(),
       phone: phone.trim(), phoneVerified: true,
       registrationIp: ip, lastLoginIp: ip,
       registrationDevice: deviceId, lastLoginDevice: deviceId,
