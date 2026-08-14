@@ -171,6 +171,17 @@ export const orderService = {
     }
     const finalPhone = customer!.phone!;
 
+    // Email — only blocks on a CONFIRMED 'invalid' (see the tri-state
+    // comment on User.model.ts's emailVerificationStatus field). An
+    // account that hasn't been checked yet, or came back inconclusive,
+    // is allowed through — deliberately less strict than the phone gate
+    // above, since email can't be changed by most users historically and
+    // the backfill runs gradually in the background (see
+    // utils/backfillEmailVerification.ts).
+    if (customer!.emailVerificationStatus === 'invalid') {
+      throwErr('Your account email does not appear to be valid. Please update it in your profile before placing an order.', 400);
+    }
+
     // NEW: pay with wallet credit (from a previous refund) — applies as
     // much of the customer's balance as covers this order, up to the full
     // amount. If it fully covers the order, Cashfree is skipped entirely.
@@ -370,7 +381,7 @@ export const orderService = {
     // Dispute-strike lock — see user.service.ts applyStrike(). A locked
     // worker still sees this order in the marketplace, they just can't
     // take it until the lock expires.
-    const worker = await User.findById(workerId).select('lockedUntil referredBy phone phoneVerified');
+    const worker = await User.findById(workerId).select('lockedUntil referredBy phone phoneVerified emailVerificationStatus');
     if (worker?.lockedUntil && worker.lockedUntil > new Date()) {
       if (isPermanentLock(worker.lockedUntil)) {
         throwErr('Your account has been permanently banned and can no longer accept orders.', 403);
@@ -392,6 +403,12 @@ export const orderService = {
     // workers who signed up before this was required.
     if (!worker?.phoneVerified || !worker?.phone) {
       throwErr('Please add and verify a phone number in your profile before accepting orders.', 403);
+    }
+
+    // Same asymmetric email gate as createOrder() above — see the
+    // tri-state comment on User.model.ts's emailVerificationStatus.
+    if (worker?.emailVerificationStatus === 'invalid') {
+      throwErr('Your account email does not appear to be valid. Please update it in your profile before accepting orders.', 403);
     }
 
     const timerMinutes = parseInt(await getSetting('orderTimerMinutes', '10'));
