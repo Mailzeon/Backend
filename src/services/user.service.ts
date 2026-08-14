@@ -255,7 +255,12 @@ export const userService = {
   // dispute, so it skips the escalating tiers entirely and jumps straight
   // to the harshest one — reuses the SAME strikeLockHours4Plus setting
   // used for repeat dispute offenders, no new setting needed.
-  async applyTheftPenalty(workerId: string, orderId: string, requestedEmail: string): Promise<void> {
+  async applyTheftPenalty(
+    workerId: string,
+    orderId: string,
+    detail: string,
+    reasonKind: 'email_never_submitted' | 'wrong_password_confirmed' = 'email_never_submitted'
+  ): Promise<void> {
     const worker = await User.findById(workerId);
     if (!worker || worker.role !== 'worker') return;
 
@@ -292,15 +297,28 @@ export const userService = {
       ),
     ]);
 
+    const workerMessage = reasonKind === 'wrong_password_confirmed'
+      ? `A dispute over a wrong password on one of your orders was confirmed by admin after you didn't fix it ` +
+        `within the grace window given. Your account and network have been permanently banned. This cannot be ` +
+        `appealed through the app.`
+      : `You accepted an order requesting a specific email, but didn't submit credentials within the ` +
+        `time limit — and that exact address now exists. Your account and network have been permanently ` +
+        `banned. This cannot be appealed through the app.`;
+
     await notificationService.create({
       userId: worker._id,
       title: '🚨 Account Permanently Banned — Confirmed Account Theft',
-      message:
-        `You accepted an order requesting a specific email, but didn't submit credentials within the ` +
-        `time limit — and that exact address now exists. Your account and network have been permanently ` +
-        `banned. This cannot be appealed through the app.`,
+      message: workerMessage,
       type: 'dispute',
     });
+
+    const adminMessage = reasonKind === 'wrong_password_confirmed'
+      ? `${worker.name}'s wrong-password dispute on order #${orderId.slice(-6).toUpperCase()} was upheld ` +
+        `after they didn't fix it within the grace window (${detail}). Worker's account and IP(s)/device(s) ` +
+        `have been permanently banned automatically. Review from Users → this worker's profile if it needs reversing.`
+      : `${worker.name} accepted order #${orderId.slice(-6).toUpperCase()} requesting ${detail}, ` +
+        `never submitted credentials, and that address now exists. Worker's account and IP(s) have been ` +
+        `permanently banned automatically. Review from Users → this worker's profile if it needs reversing.`;
 
     // Unlike a normal 4+ dispute-strike notice, this always alerts admins
     // immediately regardless of prior strike count — the evidence here is
@@ -309,11 +327,8 @@ export const userService = {
     const admins = await User.find({ role: 'admin' }).select('_id');
     await Promise.all(admins.map(a => notificationService.create({
       userId: a._id,
-      title: `🚨 Confirmed Email Theft: ${worker.name}`,
-      message:
-        `${worker.name} accepted order #${orderId.slice(-6).toUpperCase()} requesting ${requestedEmail}, ` +
-        `never submitted credentials, and that address now exists. Worker's account and IP(s) have been ` +
-        `permanently banned automatically. Review from Users → this worker's profile if it needs reversing.`,
+      title: `🚨 Confirmed Theft: ${worker.name}`,
+      message: adminMessage,
       type: 'dispute',
       orderId,
     })));
