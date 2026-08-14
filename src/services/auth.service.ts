@@ -174,7 +174,7 @@ export const authService = {
 
     const user = await User.create({
       name: name.trim(), email, password, role,
-      emailVerified: emailCheck === 'valid', emailVerifiedCheckedAt: new Date(),
+      emailVerificationStatus: emailCheck, emailVerifiedCheckedAt: new Date(),
       phone: phone.trim(), phoneVerified: true,
       registrationIp: ip, lastLoginIp: ip,
       registrationDevice: deviceId, lastLoginDevice: deviceId,
