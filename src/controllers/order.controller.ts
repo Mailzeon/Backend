@@ -88,6 +88,21 @@ export const submitVerificationNumber = async (req: Request, res: Response) => {
   sendSuccess(res, 'Verification number sent. Worker has been notified.', order);
 };
 
+// Grace-window resubmission after a "wrong password" dispute — see
+// order.service.ts resubmitCredentials() / utils/disputeGrace.ts.
+export const resubmitCredentials = async (req: Request, res: Response) => {
+  const { email, password, notes } = req.body;
+  if (!email?.trim() || !password?.trim()) {
+    sendError(res, 'Email and password are required.', 400); return;
+  }
+  const order = await orderService.resubmitCredentials(
+    req.params.id,
+    req.user!._id.toString(),
+    { email: email.trim(), password: password.trim(), notes }
+  );
+  sendSuccess(res, 'Corrected credentials submitted successfully.', order);
+};
+
 export const confirmVerificationNumber = async (req: Request, res: Response) => {
   const order = await orderService.confirmVerificationNumber(
     req.params.id, req.user!._id.toString()
