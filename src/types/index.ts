@@ -30,6 +30,8 @@ export interface IUser extends Document {
   _id: Types.ObjectId;
   name: string;
   email: string;
+  emailVerified?: boolean;
+  emailVerifiedCheckedAt?: Date;
   password: string;
   role: UserRole;
   // NEW: required by Cashfree at order-creation time; optional here since
