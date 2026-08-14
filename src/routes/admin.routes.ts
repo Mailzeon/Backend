@@ -166,6 +166,7 @@ router.get('/email-api-key-status', async (_req: Request, res: Response) => {
   sendSuccess(res, 'API key rotation status fetched.', {
     email: await getRotationStatus('abstract-email-reputation', process.env.ABSTRACT_EMAIL_API_KEYS || process.env.ABSTRACT_API_KEY),
     phone: await getRotationStatus('abstract-phone-intelligence', process.env.ABSTRACT_PHONE_API_KEYS || process.env.ABSTRACT_PHONE_API_KEY),
+    ip:    await getRotationStatus('abstract-ip-intelligence', process.env.ABSTRACT_IP_API_KEYS || process.env.ABSTRACT_IP_API_KEY),
   });
 });
 
