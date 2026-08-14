@@ -72,8 +72,20 @@ export const env = {
   // 10-minute timer expire without ever submitting credentials — see
   // utils/emailVerification.ts. Switched from Email Awesome (their
   // infrastructure went down, never came back, support never replied).
-  // Optional: the check is silently skipped (treated as inconclusive) if
-  // this isn't configured, so the server still works fine without it.
+  //
+  // ABSTRACT_EMAIL_API_KEYS (preferred): comma-separated list of ANY
+  // number of Abstract Email Reputation API keys (from separate Abstract
+  // accounts) — the code automatically rotates between them and skips
+  // any that hit their monthly 100-request quota. See the big comment
+  // block at the bottom of emailVerification.ts for exactly how to add
+  // more keys later.
+  // ABSTRACT_API_KEY (legacy): still works on its own as a single key if
+  // the multi-key var above isn't set — kept only for backward
+  // compatibility, prefer the plural one for anything new.
+  // Both optional: the check is silently skipped (treated as
+  // inconclusive) if neither is configured, so the server still works
+  // fine without it.
+  ABSTRACT_EMAIL_API_KEYS: optional('ABSTRACT_EMAIL_API_KEYS'),
   ABSTRACT_API_KEY: optional('ABSTRACT_API_KEY'),
 
   // NEW — IP Intelligence (VPN/proxy/Tor detection), used at worker
