@@ -98,6 +98,7 @@ export const walletService = {
       workerEarning: number;
       referralTaxAmount?: number;
       referrerId?: Types.ObjectId | string;
+      wrongPasswordPenaltyAmount?: number;
     },
     baseDescription: string
   ): Promise<void> {
@@ -105,7 +106,15 @@ export const walletService = {
     const workerId   = order.workerId.toString();
     const grossAmount = order.workerEarning;
     const taxAmount   = order.referralTaxAmount ?? 0;
-    const netAmount   = Math.round((grossAmount - taxAmount) * 100) / 100;
+    // Locked in at resubmission time (see order.service.ts
+    // resubmitCredentials()) — the worker's first password submission was
+    // wrong on this order, so a penalty applies regardless of which path
+    // eventually settles it. Deliberately not mentioned in the
+    // description shown to the worker either, same as the referral cut —
+    // they already got a separate, explicit notification about the
+    // penalty amount when they resubmitted.
+    const penaltyAmount = order.wrongPasswordPenaltyAmount ?? 0;
+    const netAmount   = Math.round((grossAmount - taxAmount - penaltyAmount) * 100) / 100;
 
     // Deliberately never mention the referral deduction anywhere the
     // worker themselves can see it — description stays identical whether
