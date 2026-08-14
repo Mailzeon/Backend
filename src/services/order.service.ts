@@ -11,6 +11,7 @@ import { notificationService }  from './notification.service';
 import { workerLevelService }   from './workerLevel.service';
 import { paymentService }       from './payment.service';
 import { startOrderTimer, clearOrderTimer } from '../utils/orderTimer';
+import { scheduleGraceEscalation, clearGraceTimer } from '../utils/disputeGrace';
 import { checkEmailExists } from '../utils/emailVerification';
 import { isPermanentLock } from '../utils/permanentLock';
 import { emitToUser, emitToMarketplace, EVENTS } from '../socket/events';
@@ -507,6 +508,85 @@ export const orderService = {
     return orderService.applyReferralDeduction(order!.toObject()) as unknown as IOrder;
   },
 
+  // ── Worker: resubmit corrected credentials during a wrong-password
+  //    grace window (see utils/disputeGrace.ts / reportProblem() above).
+  //    Only usable while the order is sitting in 'under_review' with an
+  //    unexpired wrongPasswordGraceDeadline — outside that window this
+  //    just fails with a clear error, same as if the window had already
+  //    escalated to admin.
+  async resubmitCredentials(
+    orderId: string,
+    workerId: string,
+    credentials: { email: string; password: string; notes?: string }
+  ): Promise<IOrder> {
+    const order = await Order.findOne({
+      _id: orderId,
+      workerId,
+      status: 'under_review',
+      wrongPasswordGraceDeadline: { $gt: new Date() },
+    });
+    if (!order) {
+      throwErr('This order is not currently awaiting a credential resubmission — the grace window may have expired.', 400);
+    }
+
+    const submittedEmail = credentials.email.trim().toLowerCase();
+    if (order!.emailType === 'custom') {
+      if (order!.requestedEmail && submittedEmail !== order!.requestedEmail.toLowerCase()) {
+        throwErr(`Submitted email must exactly match the requested email: ${order!.requestedEmail}`, 400);
+      }
+    } else if (order!.domain && !submittedEmail.endsWith(`@${order!.domain.toLowerCase()}`)) {
+      throwErr(`Submitted email must be a @${order!.domain} address.`, 400);
+    }
+
+    clearGraceTimer(orderId);
+
+    // Lock in the penalty NOW, in rupees, off the already-fixed
+    // workerEarning — settleOrderEarnings() in wallet.service.ts deducts
+    // this automatically at settlement, whichever path the order
+    // eventually completes through (customer confirms, auto-completes,
+    // or a LATER dispute gets rejected in the worker's favor). The
+    // penalty applies regardless of how this order ultimately resolves —
+    // the first submission was still wrong, that's not undone by fixing
+    // it on request.
+    const penaltyRate = parseFloat(await getSetting('wrongPasswordPenaltyRate', '5'));
+    const penaltyAmount = Math.round(order!.workerEarning * (penaltyRate / 100) * 100) / 100;
+
+    const autoHours = parseInt(await getSetting('autoCompleteHours', '24'));
+    const now    = new Date();
+    const autoAt = new Date(now.getTime() + autoHours * 60 * 60 * 1000);
+
+    order!.status                      = 'credentials_submitted';
+    order!.credentials                 = credentials;
+    order!.credentialsSubmittedAt      = now;
+    order!.autoCompleteAt              = autoAt;
+    order!.wrongPasswordGraceDeadline  = undefined;
+    order!.wrongPasswordPenaltyAmount  = penaltyAmount;
+    await order!.save();
+
+    const customerId = order!.customerId.toString();
+    const orderRef    = order!._id.toString().slice(-6).toUpperCase();
+
+    await Promise.all([
+      notificationService.create({
+        userId:  customerId,
+        title:   '✅ Corrected Credentials Ready',
+        message: `The worker has resubmitted account details for Order #${orderRef}. Please try logging in again.`,
+        type:    'order',
+        orderId: order!._id,
+      }),
+      notificationService.create({
+        userId:  workerId,
+        title:   'Credentials Resubmitted',
+        message: `Since your first submission for Order #${orderRef} was wrong, a ${penaltyRate}% penalty (₹${penaltyAmount}) will be deducted from this order's earning once it's completed. Make sure to submit the correct details on the first try next time.`,
+        type:    'order',
+        orderId: order!._id,
+      }),
+    ]);
+
+    emitToUser(customerId, EVENTS.CREDENTIALS_READY, { orderId });
+    return order!;
+  },
+
   // ── Customer: submit the verification number they see on their Google
   //    "new device" login screen — for the case where Google shows a
   //    "select this number on your other device" prompt. If Google instead
@@ -680,6 +760,47 @@ export const orderService = {
     });
     if (!order) throwErr('This order cannot be disputed in its current state.', 400);
     if (!order.workerId) throwErr('No worker assigned to this order.', 400);
+
+    const workerId = order.workerId.toString();
+    const orderRef  = order._id.toString().slice(-6).toUpperCase();
+
+    // ── Wrong-password grace window (first offense only) ─────────────────
+    // See utils/disputeGrace.ts for the full reasoning. This does NOT
+    // create a Dispute or notify admin — it gives the worker one timed
+    // chance to fix it first via resubmitCredentials() below. Only a
+    // SECOND wrong_password report on this same order (wrongPasswordGrace-
+    // Used already true) falls through to the normal immediate-dispute
+    // path further down, same as every other reason always has.
+    if (reason === 'wrong_password' && !order.wrongPasswordGraceUsed) {
+      const graceMinutes = parseInt(await getSetting('wrongPasswordGraceMinutes', '30'));
+      const deadline = new Date(Date.now() + graceMinutes * 60 * 1000);
+
+      order.status = 'under_review';
+      order.wrongPasswordGraceDeadline = deadline;
+      order.wrongPasswordGraceUsed = true;
+      await order.save();
+
+      scheduleGraceEscalation(orderId, graceMinutes * 60 * 1000);
+
+      await Promise.all([
+        notificationService.create({
+          userId:  workerId,
+          title:   '⚠️ Customer Says: Wrong Password',
+          message: `Order #${orderRef}: the customer couldn't log in with the password you submitted. You have ${graceMinutes} minutes to resubmit the CORRECT password. If you don't respond in time, or submit the wrong one again, this goes to admin for review — if confirmed, this counts as account theft and results in a PERMANENT BAN from Mailzeon.`,
+          type:    'dispute',
+          orderId: order._id,
+        }),
+        notificationService.create({
+          userId:  customerId,
+          title:   'Giving the Worker a Chance to Fix It',
+          message: `We've asked the worker to resend the correct password within ${graceMinutes} minutes. If they don't, this will automatically be escalated to admin for review.`,
+          type:    'dispute',
+          orderId: order._id,
+        }),
+      ]);
+
+      return order;
+    }
 
     order.status = 'under_review';
     await order.save();
