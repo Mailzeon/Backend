@@ -11,6 +11,7 @@ import { sendSuccess, sendError } from '../utils/response';
 import { userService } from '../services/user.service';
 import { generateUniqueReferralCode } from '../services/auth.service';
 import { verifyPhone } from '../utils/phoneVerification';
+import { checkEmailExists } from '../utils/emailVerification';
 
 const router = Router();
 router.use(authenticate);
@@ -22,11 +23,41 @@ router.use(authenticate);
 
 // Update profile / payment details
 router.put('/profile', async (req: Request, res: Response) => {
-  const { name, upiId, bankDetails, phone } = req.body;
+  const { name, upiId, bankDetails, phone, email } = req.body;
   const updates: Record<string, unknown> = {};
   if (name?.trim()) updates.name = name.trim();
   if (upiId !== undefined) updates.upiId = upiId;
   if (bankDetails) updates.bankDetails = bankDetails;
+
+  // NEW: email can now be changed (it used to be permanently locked at
+  // signup) — added specifically so someone whose email came back
+  // 'invalid' from the verification check (see auth.service.ts register()
+  // / utils/backfillEmailVerification.ts) actually has a way to fix it,
+  // instead of being permanently stuck with no recourse. Re-verified on
+  // every change, same reasoning as phone below. Soft/fail-open here
+  // though, unlike phone: a slow/down provider shouldn't block someone
+  // from just changing their email address, so 'unknown' still saves the
+  // change (see checkEmailExists()'s tri-state result and
+  // order.service.ts's gate, which only blocks on a CONFIRMED 'invalid').
+  if (typeof email === 'string' && email.trim()) {
+    const trimmedEmail = email.trim().toLowerCase();
+    if (trimmedEmail !== req.user!.email) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+        sendError(res, 'Enter a valid email address.', 400); return;
+      }
+      const taken = await User.findOne({ email: trimmedEmail, _id: { $ne: req.user!._id } });
+      if (taken) { sendError(res, 'This email is already in use by another account.', 409); return; }
+
+      const emailCheck = await checkEmailExists(trimmedEmail);
+      if (emailCheck === 'invalid') {
+        sendError(res, 'This email address does not appear to exist. Please double-check it or use a different one.', 400);
+        return;
+      }
+      updates.email = trimmedEmail;
+      updates.emailVerificationStatus = emailCheck; // 'valid' or 'unknown' — 'invalid' already returned above
+      updates.emailVerifiedCheckedAt = new Date();
+    }
+  }
 
   // BUG FIX: `phone` was never destructured from req.body here before —
   // the frontend has been sending it all along, but it was silently
