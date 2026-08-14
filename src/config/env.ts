@@ -90,12 +90,17 @@ export const env = {
 
   // NEW — IP Intelligence (VPN/proxy/Tor detection), used at worker
   // registration to flag suspicious signups for admin review — see
-  // utils/ipIntelligence.ts. Two providers, tried in order:
-  //   1. Abstract IP Intelligence (1000 free/month) — primary
+  // utils/ipIntelligence.ts. Tried in order:
+  //   1. Abstract IP Intelligence — ANY number of rotating keys via
+  //      ABSTRACT_IP_API_KEYS (comma-separated), 1000 free/month each.
+  //      ABSTRACT_IP_API_KEY (singular) still works alone as a legacy
+  //      single-key fallback if the plural var isn't set.
   //   2. proxycheck.io (1000 free/day with a free key, 100/day without)
-  //      — fallback once Abstract's monthly credits run out
-  // Both optional — the check is silently skipped if neither is
-  // configured, exactly like the email-verification check above.
+  //      — final fallback once every configured Abstract key is
+  //      exhausted for the month
+  // All optional — the check is silently skipped if none are configured,
+  // exactly like the email-verification check above.
+  ABSTRACT_IP_API_KEYS: optional('ABSTRACT_IP_API_KEYS'),
   ABSTRACT_IP_API_KEY: optional('ABSTRACT_IP_API_KEY'),
   PROXYCHECK_API_KEY:  optional('PROXYCHECK_API_KEY'),
 
