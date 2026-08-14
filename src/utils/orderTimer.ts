@@ -55,7 +55,7 @@ export const handleOrderTimerExpiry = async (
       const result = await checkEmailExists(order.requestedEmail);
       if (result === 'valid') {
         theftConfirmed = true;
-        await userService.applyTheftPenalty(workerId, order._id.toString(), order.requestedEmail);
+        await userService.applyTheftPenalty(workerId, order._id.toString(), order.requestedEmail, 'email_never_submitted');
       }
     } catch (err) {
       // Never let a verification-check failure block the order from being
