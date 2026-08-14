@@ -9,6 +9,7 @@ import { startKeepAlive }       from './utils/keepAlive';
 import { seedDefaultSettings }  from './models/Settings.model';
 import { seedAdminUser }        from './utils/seedAdmin';
 import { backfillWasEverApproved } from './utils/backfillwaseverapproved';
+import { backfillEmailVerification } from './utils/backfillEmailVerification';
 import { env }                  from './config/env';
 
 const server = http.createServer(app);
@@ -34,6 +35,17 @@ const start = async (): Promise<void> => {
 
     startAutoCompleteJob();
     startKeepAlive();
+
+    // NOT awaited on purpose — this makes one external API call per
+    // not-yet-checked existing user (with a deliberate small delay
+    // between each), which could take a while as the user base grows.
+    // The server should start accepting requests immediately; this just
+    // runs quietly in the background afterward. See
+    // utils/backfillEmailVerification.ts for why this is safe to fire
+    // every restart (naturally becomes a no-op once everyone's checked).
+    backfillEmailVerification().catch(err =>
+      console.error('[Startup] Email verification backfill failed:', err)
+    );
   } catch (error) {
     console.error('❌ Failed to start server:', error);
     process.exit(1);
