@@ -89,6 +89,26 @@ export const submitCredentialsSchema = z.object({
   }),
 });
 
+// Grace-window resubmission after a "wrong password" dispute — see
+// order.service.ts resubmitCredentials(). Same shape minus
+// acknowledgedNoPhone: this is a correction to an already-submitted order,
+// not a first submission, so re-asking that specific checkbox again isn't
+// meaningful here.
+export const resubmitCredentialsSchema = z.object({
+  email: z.string()
+    .trim()
+    .min(1, 'Email / username is required')
+    .max(200, 'Value is too long'),
+  password: z.string()
+    .trim()
+    .min(1, 'Password is required')
+    .max(200, 'Password is too long'),
+  notes: z.string()
+    .trim()
+    .max(1000, 'Notes must be under 1000 characters')
+    .optional(),
+});
+
 export const submitNumberSchema = z.object({
   number: z.string()
     .trim()
