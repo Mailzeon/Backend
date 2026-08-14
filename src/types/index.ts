@@ -30,7 +30,7 @@ export interface IUser extends Document {
   _id: Types.ObjectId;
   name: string;
   email: string;
-  emailVerified?: boolean;
+  emailVerificationStatus?: 'valid' | 'invalid' | 'unknown';
   emailVerifiedCheckedAt?: Date;
   password: string;
   role: UserRole;
