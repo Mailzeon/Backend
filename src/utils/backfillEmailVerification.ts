@@ -41,7 +41,7 @@ export async function backfillEmailVerification(): Promise<void> {
     const result = await checkEmailExists(user.email);
     await User.updateOne(
       { _id: user._id },
-      { emailVerified: result === 'valid', emailVerifiedCheckedAt: new Date() }
+      { emailVerificationStatus: result, emailVerifiedCheckedAt: new Date() }
     );
     if (result === 'valid') verifiedCount++;
     // Small gap between checks — this can be 50-100+ accounts on first
