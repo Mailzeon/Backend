@@ -3,11 +3,11 @@ import { authenticate } from '../middleware/auth.middleware';
 import { requireRole, requireApprovedWorker } from '../middleware/role.middleware';
 import { validate } from '../middleware/validate.middleware';
 import {
-  createOrderSchema, submitCredentialsSchema, checkEmailSchema,
+  createOrderSchema, submitCredentialsSchema, resubmitCredentialsSchema, checkEmailSchema,
   submitNumberSchema, submitCodeSchema, reportProblemSchema,
 } from '../validators/order.validator';
 import {
-  createOrder, cancelOrder, getMarketplace, acceptOrder, submitCredentials,
+  createOrder, cancelOrder, getMarketplace, acceptOrder, submitCredentials, resubmitCredentials,
   submitVerificationNumber, confirmVerificationNumber,
   requestVerificationCode, submitVerificationCode,
   confirmSuccess, reportProblem, getOrder, getMyOrders, getAssignedOrders,
@@ -36,6 +36,7 @@ router.get('/marketplace',            requireRole('worker'), getMarketplace);
 router.get('/assigned',               requireRole('worker'), getAssignedOrders);
 router.patch('/:id/accept',           requireApprovedWorker, acceptOrder);
 router.patch('/:id/credentials',      requireApprovedWorker, validate(submitCredentialsSchema), submitCredentials);
+router.patch('/:id/resubmit-credentials', requireApprovedWorker, validate(resubmitCredentialsSchema), resubmitCredentials);
 router.patch('/:id/confirm-number',   requireApprovedWorker, confirmVerificationNumber);
 router.patch('/:id/submit-code',      requireApprovedWorker, validate(submitCodeSchema), submitVerificationCode);
 
