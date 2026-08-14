@@ -18,6 +18,27 @@ const UserSchema = new Schema<IUser>(
       lowercase: true,
       trim: true,
     },
+    // NEW — checked via Abstract Email Reputation at registration (see
+    // auth.service.ts register() / utils/emailVerification.ts) — same
+    // multi-key rotating check already used for order-time theft
+    // detection, now also run once against the signup email itself, to
+    // catch fake/non-existent addresses (not just disposable domains —
+    // this confirms the SPECIFIC address is actually deliverable).
+    // Soft signal, not a hard gate: 'unknown' (API inconclusive/down)
+    // never blocks registration, fail-open like every other check in this
+    // codebase — it just leaves this false rather than true.
+    emailVerified: {
+      type: Boolean,
+      default: false,
+    },
+    // Set the moment a check is attempted (any outcome) — lets the
+    // one-time startup backfill (see utils/backfillEmailVerification.ts)
+    // tell "genuinely never checked yet" apart from "checked and came back
+    // unverified", so existing accounts don't get silently re-checked
+    // (and burn API quota) on every server restart.
+    emailVerifiedCheckedAt: {
+      type: Date,
+    },
     password: {
       type: String,
       required: [true, 'Password is required'],
