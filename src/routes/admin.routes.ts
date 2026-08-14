@@ -156,15 +156,22 @@ router.get('/analytics', async (_req: Request, res: Response) => {
   sendSuccess(res, 'Analytics fetched.', days);
 });
 
-// ── Email API key rotation status (see utils/emailVerification.ts) ─────────
+// ── API key rotation status (see utils/emailVerification.ts /
+//    utils/phoneVerification.ts) ─────────────────────────────────────────
 // Shows how many keys are configured and which (if any) are currently
-// exhausted for the month — so you can see at a glance whether it's time
-// to add more keys, without digging through logs.
+// exhausted for the month, for each rotating provider — so you can see at
+// a glance whether it's time to add more keys, without digging through
+// logs.
 router.get('/email-api-key-status', async (_req: Request, res: Response) => {
-  const configured = (process.env.ABSTRACT_EMAIL_API_KEYS || process.env.ABSTRACT_API_KEY || '')
-    .split(',').map(k => k.trim()).filter(Boolean);
+  sendSuccess(res, 'API key rotation status fetched.', {
+    email: await getRotationStatus('abstract-email-reputation', process.env.ABSTRACT_EMAIL_API_KEYS || process.env.ABSTRACT_API_KEY),
+    phone: await getRotationStatus('abstract-phone-intelligence', process.env.ABSTRACT_PHONE_API_KEYS || process.env.ABSTRACT_PHONE_API_KEY),
+  });
+});
 
-  const state = await ApiKeyRotationState.findById('abstract-email-reputation');
+async function getRotationStatus(stateId: string, keysEnvValue: string | undefined) {
+  const configured = (keysEnvValue || '').split(',').map(k => k.trim()).filter(Boolean);
+  const state = await ApiKeyRotationState.findById(stateId);
   const now = new Date();
   const exhaustedIndexes = state
     ? Array.from(state.exhausted.entries())
@@ -172,7 +179,7 @@ router.get('/email-api-key-status', async (_req: Request, res: Response) => {
         .map(([idx]) => Number(idx))
     : [];
 
-  sendSuccess(res, 'Email API key rotation status fetched.', {
+  return {
     totalKeys:      configured.length,
     exhaustedCount: exhaustedIndexes.length,
     availableCount: configured.length - exhaustedIndexes.length,
@@ -183,8 +190,8 @@ router.get('/email-api-key-status', async (_req: Request, res: Response) => {
       slot: i + 1,
       resetsAt: state!.exhausted.get(String(i)),
     })),
-  });
-});
+  };
+}
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 router.get('/settings', async (_req: Request, res: Response) => {
