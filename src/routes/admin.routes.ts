@@ -74,10 +74,18 @@ router.get('/stats', async (_req: Request, res: Response) => {
         commissionToday: {
           $sum: { $cond: [{ $gte: ['$completedAt', today] }, '$platformCommission', 0] },
         },
+        // NEW: wrong-password penalty (see wallet.service.ts
+        // settleOrderEarnings()) is separate platform revenue from
+        // commission — tracked on its own so it's visible as its own line
+        // rather than getting silently folded into the commission number.
+        penaltyTotal: { $sum: { $ifNull: ['$wrongPasswordPenaltyAmount', 0] } },
+        penaltyToday: {
+          $sum: { $cond: [{ $gte: ['$completedAt', today] }, { $ifNull: ['$wrongPasswordPenaltyAmount', 0] }, 0] },
+        },
       },
     },
   ]);
-  const revenue = revenueAgg[0] ?? { total: 0, today: 0, commissionTotal: 0, commissionToday: 0 };
+  const revenue = revenueAgg[0] ?? { total: 0, today: 0, commissionTotal: 0, commissionToday: 0, penaltyTotal: 0, penaltyToday: 0 };
 
   sendSuccess(res, 'Stats fetched.', {
     totalCustomers, totalWorkers, onlineWorkers,
@@ -87,6 +95,8 @@ router.get('/stats', async (_req: Request, res: Response) => {
     todayRevenue:    revenue.today,
     totalCommission: revenue.commissionTotal, // NEW: platform's actual net earnings
     todayCommission: revenue.commissionToday, // NEW
+    totalPenalty:    revenue.penaltyTotal,    // NEW: wrong-password penalty revenue
+    todayPenalty:    revenue.penaltyToday,    // NEW
   });
 });
 
