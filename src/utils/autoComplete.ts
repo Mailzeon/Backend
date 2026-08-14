@@ -6,6 +6,7 @@ import { paymentService }     from '../services/payment.service';
 import { workerLevelService } from '../services/workerLevel.service';
 import { userService }        from '../services/user.service';
 import { handleOrderTimerExpiry } from './orderTimer';
+import { escalateWrongPasswordGrace } from './disputeGrace';
 import { emitToUser, EVENTS } from '../socket/events';
 
 /**
@@ -38,10 +39,29 @@ export const runAutoCompleteJob = async (): Promise<void> => {
     await autoCancelUnresponsiveWorker(now);
     await cleanupAbandonedPayments(now);
     await cleanupExpiredAcceptedOrders(now);
+    await cleanupExpiredWrongPasswordGrace(now);
   } catch (error) {
     console.error('[AutoComplete] Job error:', error);
   }
 };
+
+// ── Safety net for the wrong-password dispute grace window (see
+//    utils/disputeGrace.ts) — same reasoning as cleanupExpiredAcceptedOrders
+//    below: the in-process timer is gone if the server restarts/sleeps
+//    mid-window, so this sweep catches anything whose
+//    wrongPasswordGraceDeadline has already passed and escalates it to
+//    admin exactly as if the in-process timer had fired normally.
+async function cleanupExpiredWrongPasswordGrace(now: Date): Promise<void> {
+  const stuck = await Order.find({
+    status: 'under_review',
+    wrongPasswordGraceDeadline: { $lte: now },
+  }).select('_id');
+  for (const order of stuck) {
+    await escalateWrongPasswordGrace(order._id.toString()).catch(err =>
+      console.error(`[AutoComplete] Failed to escalate grace order ${order._id}:`, err)
+    );
+  }
+}
 
 // ── Safety net for the 10-minute accept-timer (see utils/orderTimer.ts) ────
 // That timer lives in-process (a plain setTimeout) — if the server
