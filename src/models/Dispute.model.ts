@@ -33,7 +33,7 @@ const DisputeSchema = new Schema<IDispute>(
     },
     reason: {
       type: String,
-      enum: ['wrong_password', 'unable_to_login', 'account_issue', 'other'],
+      enum: ['wrong_password', 'account_not_found', 'unable_to_login', 'account_issue', 'other'],
       required: true,
     },
     description: String,
