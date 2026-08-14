@@ -114,6 +114,24 @@ export interface IOrder extends Document {
   autoCompleteAt?: Date;
   completedAt?: Date;
 
+  // ── Wrong-password dispute grace window ──────────────────────────────
+  // See utils/disputeGrace.ts + order.service.ts reportProblem()/
+  // resubmitCredentials(). When a customer disputes with reason
+  // 'wrong_password' for the FIRST time on an order, the worker gets one
+  // timed chance to resubmit corrected credentials before the dispute
+  // actually reaches admin — deliberately NOT the same as a second
+  // dispute or a repeat offense, which skip straight to admin and are
+  // treated as confirmed theft if upheld.
+  wrongPasswordGraceDeadline?: Date;
+  // True the moment a grace window has been granted — set immediately,
+  // BEFORE the deadline passes, so this order can never get a second one
+  // even if something re-triggers reportProblem() again.
+  wrongPasswordGraceUsed?: boolean;
+  // Rupees, locked in at resubmission time (workerEarning is already
+  // fixed by then) — deducted at settlement in wallet.service.ts
+  // settleOrderEarnings(), same mechanism as referralTaxAmount above.
+  wrongPasswordPenaltyAmount?: number;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -241,6 +259,9 @@ const OrderSchema = new Schema<IOrder>(
     credentialsSubmittedAt: Date,
     autoCompleteAt: Date,
     completedAt: Date,
+    wrongPasswordGraceDeadline: Date,
+    wrongPasswordGraceUsed: { type: Boolean, default: false },
+    wrongPasswordPenaltyAmount: Number,
   },
   { timestamps: true }
 );
