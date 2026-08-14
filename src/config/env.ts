@@ -99,13 +99,22 @@ export const env = {
   ABSTRACT_IP_API_KEY: optional('ABSTRACT_IP_API_KEY'),
   PROXYCHECK_API_KEY:  optional('PROXYCHECK_API_KEY'),
 
-  // NEW — Abstract Phone Validation, used to require a real (non-VOIP,
+  // NEW — Abstract Phone Intelligence, used to require a real (non-VOIP,
   // non-fake) phone number at registration and profile updates — see
   // utils/phoneVerification.ts. Unlike the other Abstract keys above, this
-  // one is NOT optional in spirit: if it's missing, phone verification
-  // will fail closed (see phoneVerification.ts's checkFailed behavior) and
-  // nobody will be able to register or verify a phone at all. Must be set
-  // for the app to be usable.
+  // one is NOT optional in spirit: if not configured, phone verification
+  // fails closed (see phoneVerification.ts's checkFailed behavior) and
+  // nobody will be able to register or verify a phone at all.
+  //
+  // ABSTRACT_PHONE_API_KEYS (preferred): comma-separated list of ANY
+  // number of Abstract Phone Intelligence API keys (from separate
+  // Abstract accounts) — automatically rotates between them and skips any
+  // that hit their monthly quota. See the big comment block at the bottom
+  // of phoneVerification.ts for exactly how to add more keys later.
+  // ABSTRACT_PHONE_API_KEY (legacy): still works on its own as a single
+  // key if the multi-key var above isn't set — kept only for backward
+  // compatibility, prefer the plural one for anything new.
+  ABSTRACT_PHONE_API_KEYS: optional('ABSTRACT_PHONE_API_KEYS'),
   ABSTRACT_PHONE_API_KEY: optional('ABSTRACT_PHONE_API_KEY'),
 } as const;
 
