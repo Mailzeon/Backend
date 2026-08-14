@@ -107,6 +107,22 @@ export const seedDefaultSettings = async (): Promise<void> => {
       value: '3',
       description: 'Percent of a referred worker\'s earning paid to their referrer on every completed order',
     },
+    // ── Wrong-password dispute grace window ──────────────────────────────
+    // See utils/disputeGrace.ts / order.service.ts reportProblem(). Gives
+    // a worker one timed chance to fix a wrong password BEFORE the
+    // dispute reaches admin — a second wrong attempt (or letting the
+    // window expire) escalates straight to admin, and is treated as
+    // CONFIRMED THEFT (permanent ban) if upheld, not just a strike.
+    {
+      key: 'wrongPasswordGraceMinutes',
+      value: '30',
+      description: 'Minutes a worker has to resubmit corrected credentials after a "wrong password" dispute, before it escalates to admin',
+    },
+    {
+      key: 'wrongPasswordPenaltyRate',
+      value: '5',
+      description: 'Percent deducted from a worker\'s earning on an order where their first password submission was wrong (even if corrected in time)',
+    },
   ];
 
   for (const s of defaults) {
