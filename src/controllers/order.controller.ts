@@ -136,7 +136,16 @@ export const confirmSuccess = async (req: Request, res: Response) => {
 export const reportProblem = async (req: Request, res: Response) => {
   const { reason, description } = req.body;
 
-  const validReasons = ['wrong_password', 'unable_to_login', 'account_issue', 'other'];
+  // BUG FIX (Aug 2026): this list was ALSO missing 'account_not_found' —
+  // a separate copy of the same set the Zod schema (order.validator.ts
+  // reportProblemSchema) already validates. Since Zod runs first and
+  // already guarantees `reason` is one of the real enum values, this
+  // second check here was redundant to begin with (and dangerous:
+  // silently downgrading a valid-but-unlisted reason to 'other' is worse
+  // than just trusting what already-validated middleware guaranteed).
+  // Kept as a defensive fallback only, now sourced from the single
+  // shared list so the two can never drift apart again.
+  const validReasons: string[] = ['wrong_password', 'account_not_found', 'unable_to_login', 'account_issue', 'other'];
   const finalReason  = validReasons.includes(reason) ? reason : 'other';
 
   const order = await orderService.reportProblem(
