@@ -9,6 +9,7 @@ import { isPermanentLock, resolveEvasionLock } from '../utils/permanentLock';
 import { checkIpRisk } from '../utils/ipIntelligence';
 import { verifyPhone } from '../utils/phoneVerification';
 import { checkEmailExists } from '../utils/emailVerification';
+import { describeDevice } from '../utils/deviceDescription';
 import { signToken } from '../utils/jwt';
 import { sendPasswordResetEmail } from '../utils/email';
 import { IUser, UserRole } from '../types';
@@ -64,7 +65,7 @@ export const generateUniqueReferralCode = async (): Promise<string> => {
 };
 
 export const authService = {
-  async register(input: RegisterInput, ip?: string): Promise<AuthResult> {
+  async register(input: RegisterInput, ip?: string, userAgent?: string): Promise<AuthResult> {
     const { name, email, password, role, phone, referralCode, deviceId } = input;
 
     const existing = await User.findOne({ email: email.toLowerCase() });
@@ -178,6 +179,7 @@ export const authService = {
       phone: phone.trim(), phoneVerified: true,
       registrationIp: ip, lastLoginIp: ip,
       registrationDevice: deviceId, lastLoginDevice: deviceId,
+      registrationDeviceLabel: describeDevice(userAgent), lastLoginDeviceLabel: describeDevice(userAgent),
       referralCode: newReferralCode,
       referredBy,
     });
@@ -206,7 +208,7 @@ export const authService = {
     return { user: user.toJSON(), token };
   },
 
-  async login(email: string, password: string, ip?: string, deviceId?: string): Promise<AuthResult> {
+  async login(email: string, password: string, ip?: string, deviceId?: string, userAgent?: string): Promise<AuthResult> {
     // +password because select: false in schema
     const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
     if (!user) throwHttpError('Invalid email or password.', 401);
@@ -217,6 +219,7 @@ export const authService = {
     if (ip || deviceId) {
       if (ip) user!.lastLoginIp = ip;
       if (deviceId) user!.lastLoginDevice = deviceId;
+      if (userAgent) user!.lastLoginDeviceLabel = describeDevice(userAgent);
 
       // Anti-evasion, part 2: if this IP and/or device has an active lock
       // (from a DIFFERENT, previously-struck account), inherit it onto
