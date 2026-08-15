@@ -125,7 +125,12 @@ export const submitCodeSchema = z.object({
 });
 
 export const reportProblemSchema = z.object({
-  reason: z.enum(['wrong_password', 'unable_to_login', 'account_issue', 'other'])
+  // BUG FIX (Aug 2026): 'account_not_found' was added to the Dispute
+  // model, DisputeReason type, and the frontend's dropdown — but never
+  // added here. Zod's enum rejects anything not explicitly listed, so
+  // every customer selecting "Account doesn't exist / couldn't find it"
+  // got a hard 400 error and their dispute was silently never created.
+  reason: z.enum(['wrong_password', 'account_not_found', 'unable_to_login', 'account_issue', 'other'])
     .default('other'),
   description: z.string()
     .trim()
