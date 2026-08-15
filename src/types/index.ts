@@ -49,6 +49,8 @@ export interface IUser extends Document {
   lastLoginIp?: string;
   registrationDevice?: string;
   lastLoginDevice?: string;
+  registrationDeviceLabel?: string;
+  lastLoginDeviceLabel?: string;
   ipRiskFlag?: {
     isRisky?: boolean;
     reasons?: string[];
