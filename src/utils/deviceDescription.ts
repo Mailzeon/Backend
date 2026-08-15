@@ -37,5 +37,14 @@ export function describeDevice(userAgent: string | undefined): string {
   if (deviceLabel) return `${deviceLabel}${platformSuffix}`;
   if (osLabel === 'iOS' || osLabel?.startsWith('iOS')) return `iPhone/iPad${platformSuffix}`;
   if (platformParts.length > 0) return platformParts.join(', '); // e.g. "Windows, Chrome" for desktop
-  return 'Unknown device';
+
+  // TEMP DEBUG (Aug 2026): ua-parser-js came back with nothing usable at
+  // all for this User-Agent — instead of a totally opaque "Unknown
+  // device" that gives no clue why, log the raw string so we can see
+  // exactly what's arriving (in-app browsers like WhatsApp/Instagram/
+  // Snapchat's embedded WebView often send unusual/generic UAs that
+  // don't match standard parsing patterns) and show a short snippet of
+  // it in the admin panel too, rather than nothing at all.
+  console.warn('[DeviceDescription] Could not parse any device/OS/browser info from UA:', userAgent);
+  return `Unrecognized (${userAgent.slice(0, 40)}...)`;
 }
