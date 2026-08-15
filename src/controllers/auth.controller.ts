@@ -10,7 +10,11 @@ import { setAuthCookie, clearAuthCookie } from '../utils/cookies';
 export const register = async (req: Request, res: Response): Promise<void> => {
   const { name, email, password, role, phone, referralCode, deviceId } = req.body;
 
-  const { user, token } = await authService.register({ name, email, password, role, phone, referralCode, deviceId }, req.ip);
+  const { user, token } = await authService.register(
+    { name, email, password, role, phone, referralCode, deviceId },
+    req.ip,
+    req.headers['user-agent']
+  );
   setAuthCookie(res, token);
 
   const message = role === 'worker'
@@ -26,7 +30,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 
 export const login = async (req: Request, res: Response): Promise<void> => {
   const { email, password, deviceId } = req.body;
-  const { user, token } = await authService.login(email, password, req.ip, deviceId);
+  const { user, token } = await authService.login(email, password, req.ip, deviceId, req.headers['user-agent']);
   setAuthCookie(res, token);
   sendSuccess(res, 'Logged in successfully.', { user });
 };
