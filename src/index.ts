@@ -1,65 +1,86 @@
-import 'dotenv/config';
-import http from 'http';
-import { app }                  from './app';
-import { connectDatabase }      from './config/database';
-import { initSocket }           from './socket/socket';
-import { startAutoCompleteJob } from './utils/autoComplete';
-import { recoverOrderTimers }   from './utils/recoverTimers';
-import { startKeepAlive }       from './utils/keepAlive';
-import { seedDefaultSettings }  from './models/Settings.model';
-import { seedAdminUser }        from './utils/seedAdmin';
-import { backfillWasEverApproved } from './utils/backfillwaseverapproved';
-import { backfillEmailVerification } from './utils/backfillEmailVerification';
-import { env }                  from './config/env';
+import { Document, Types } from 'mongoose';
 
-const server = http.createServer(app);
-initSocket(server);
+// ─── Union Types ──────────────────────────────────────────────────────────────
 
-const start = async (): Promise<void> => {
-  try {
-    await connectDatabase();
-    await seedDefaultSettings();
-    await seedAdminUser();
-    await backfillWasEverApproved();
-    await recoverOrderTimers();
+export type UserRole     = 'customer' | 'worker' | 'admin';
+export type WorkerLevel  = 'bronze' | 'silver' | 'gold';
 
-    server.listen(env.PORT, () => {
-      console.log('');
-      console.log('🚀 ─────────────────────────────────────────');
-      console.log(`   Server  : http://localhost:${env.PORT}`);
-      console.log(`   Health  : http://localhost:${env.PORT}/health`);
-      console.log(`   Mode    : ${env.NODE_ENV}`);
-      console.log('─────────────────────────────────────────────');
-      console.log('');
-    });
+export type OrderStatus =
+  | 'payment_pending'   // NEW: order created, awaiting Cashfree payment confirmation
+  | 'payment_failed'    // NEW: payment did not succeed — terminal state
+  | 'pending'
+  | 'accepted'
+  | 'credentials_submitted'
+  | 'verification_pending'
+  | 'success_confirmed'
+  | 'completed'
+  | 'under_review'
+  | 'cancelled';
 
-    startAutoCompleteJob();
-    startKeepAlive();
+export type WithdrawalStatus  = 'pending' | 'approved' | 'rejected' | 'completed';
+export type PaymentMethod     = 'upi' | 'bank';
+export type DisputeReason     = 'wrong_password' | 'account_not_found' | 'unable_to_login' | 'account_issue' | 'other';
+export type DisputeStatus     = 'open' | 'resolved' | 'rejected';
+export type TransactionType   = 'credit' | 'debit' | 'withdrawal' | 'recharge';
+export type NotificationType  = 'order' | 'withdrawal' | 'verification' | 'dispute' | 'system' | 'wallet';
 
-    // NOT awaited on purpose — this makes one external API call per
-    // not-yet-checked existing user (with a deliberate small delay
-    // between each), which could take a while as the user base grows.
-    // The server should start accepting requests immediately; this just
-    // runs quietly in the background afterward. See
-    // utils/backfillEmailVerification.ts for why this is safe to fire
-    // every restart (naturally becomes a no-op once everyone's checked).
-    backfillEmailVerification().catch(err =>
-      console.error('[Startup] Email verification backfill failed:', err)
-    );
-  } catch (error) {
-    console.error('❌ Failed to start server:', error);
-    process.exit(1);
-  }
-};
+// ─── Document Interfaces ──────────────────────────────────────────────────────
 
-process.on('unhandledRejection', (reason) => {
-  console.error('[UnhandledRejection]', reason);
-  process.exit(1);
-});
+export interface IUser extends Document {
+  _id: Types.ObjectId;
+  name: string;
+  email: string;
+  emailVerificationStatus?: 'valid' | 'invalid' | 'unknown';
+  emailVerifiedCheckedAt?: Date;
+  password: string;
+  role: UserRole;
+  // NEW: required by Cashfree at order-creation time; optional here since
+  // existing users won't have it until they place their first order.
+  phone?: string;
+  phoneVerified?: boolean;
+  isOnline: boolean;
+  isApproved: boolean;           // Workers need admin approval before accepting orders
+  wasEverApproved?: boolean;     // Distinguishes never-approved (pending) from approved-then-suspended
+  level: WorkerLevel;
+  strikeCount?: number;
+  lockedUntil?: Date;
+  lastStrikeAt?: Date;
+  registrationIp?: string;
+  lastLoginIp?: string;
+  registrationDevice?: string;
+  lastLoginDevice?: string;
+  registrationDeviceLabel?: string;
+  lastLoginDeviceLabel?: string;
+  ipRiskFlag?: {
+    isRisky?: boolean;
+    reasons?: string[];
+    provider?: string;
+    checkedAt?: Date;
+  };
+  referralCode?: string;
+  referredBy?: Types.ObjectId | string;
+  upiId?: string;
+  bankDetails?: {
+    accountHolder: string;
+    accountNumber: string;
+    ifscCode: string;
+    bankName: string;
+  };
+  profileImage?: string;
+  hasInstalledApp?: boolean;
+  lastSeenAsInstalledApp?: Date;
+  // Forgot/reset password — both select: false, so only present when
+  // explicitly requested with .select('+resetPasswordToken +resetPasswordExpires')
+  resetPasswordToken?: string;
+  resetPasswordExpires?: Date;
+  isDeleted?: boolean;
+  deletedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+  comparePassword(candidatePassword: string): Promise<boolean>;
+}
 
-process.on('uncaughtException', (err) => {
-  console.error('[UncaughtException]', err);
-  process.exit(1);
-});
-
-start();
+export interface JwtPayload {
+  userId: string;
+  role: UserRole;
+}
