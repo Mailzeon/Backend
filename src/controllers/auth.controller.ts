@@ -30,6 +30,10 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 
 export const login = async (req: Request, res: Response): Promise<void> => {
   const { email, password, deviceId } = req.body;
+  // TEMP DEBUG (Aug 2026): confirming what User-Agent string actually
+  // arrives here vs. what utils/deviceDescription.ts can parse from it —
+  // see that file for why this was added.
+  console.log('[Auth] Login User-Agent:', req.headers['user-agent'] || '<none received>');
   const { user, token } = await authService.login(email, password, req.ip, deviceId, req.headers['user-agent']);
   setAuthCookie(res, token);
   sendSuccess(res, 'Logged in successfully.', { user });
