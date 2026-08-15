@@ -160,6 +160,20 @@ const UserSchema = new Schema<IUser>(
     lastLoginDevice: {
       type: String,
     },
+    // NEW — human-readable device description ("Xiaomi Redmi Note 10
+    // (Android, Chrome)", "iPhone (iOS, Safari)") parsed from the User-
+    // Agent header at register/login time — see utils/deviceDescription.ts.
+    // Purely informational for the admin panel; NOT used for any
+    // matching/locking logic (that's what registrationDevice/
+    // lastLoginDevice above are for — an opaque fingerprint hash, exactly
+    // because a human-readable string like this is useless for matching:
+    // thousands of different people share the exact same phone model).
+    registrationDeviceLabel: {
+      type: String,
+    },
+    lastLoginDeviceLabel: {
+      type: String,
+    },
     // NEW — soft VPN/proxy/Tor signal captured at registration time (see
     // utils/ipIntelligence.ts + auth.service.ts register()). Never blocks
     // a signup by itself, just surfaces a warning badge for admin review
