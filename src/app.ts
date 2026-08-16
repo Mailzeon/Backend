@@ -6,7 +6,6 @@ import cookieParser from 'cookie-parser';
 import mongoSanitize from 'express-mongo-sanitize';
 import { env } from './config/env';
 import { errorMiddleware } from './middleware/error.middleware';
-import { globalLimiter } from './middleware/rateLimiter.middleware';
 import { handleWebhook } from './controllers/payment.controller';
 
 import authRoutes         from './routes/auth.routes';
@@ -86,11 +85,14 @@ app.use(express.urlencoded({ extended: true }));
 // ── NoSQL injection protection ────────────────────────────────────────────────
 app.use(mongoSanitize());
 
-// ── Rate limiting (applied to all /api routes) ────────────────────────────────
-// Note: the webhook route above is intentionally NOT covered by this, since
-// it's mounted earlier — legitimate Cashfree server-to-server traffic should
-// never be rate-limited or accidentally dropped.
-app.use('/api', globalLimiter);
+// REMOVED (Aug 2026): global /api-wide rate limiting. Even after keying
+// by account instead of raw IP, it was still causing genuine customers,
+// workers, and admin to hit "Too many requests" / "Failed to load X"
+// during completely normal usage — removed at the person's explicit
+// request after discussing the tradeoff (this does mean no protection
+// against scraping/high-volume abuse at the API layer anymore). The
+// auth-specific limiter below (login/register brute-force protection)
+// is unrelated and still in place.
 
 // ── Health check — Render uses this to detect the server is alive ─────────────
 app.get('/health', (_req, res) => {
