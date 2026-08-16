@@ -41,9 +41,19 @@ import { checkEmailExists } from './emailVerification';
 export async function backfillEmailVerification(): Promise<void> {
   console.log('[Backfill] Email verification check starting...');
 
+  // BUG FIX (Aug 2026, round 2): this used to gate on
+  // `emailVerifiedCheckedAt` — but that field was ALSO used by an OLDER,
+  // now-removed boolean-based version of this backfill (before
+  // emailVerificationStatus existed as a tri-state field). Every account
+  // already had checkedAt set from THAT old run, so this query always
+  // found 0 candidates — even though none of them had ever had
+  // emailVerificationStatus itself populated at all. Now checks the
+  // actual field we care about directly: missing (never resolved) OR
+  // literally 'unknown' (inconclusive) — checkedAt is still updated below
+  // for record-keeping, just no longer used as the gate.
   const candidates = await User.find({
     $or: [
-      { emailVerifiedCheckedAt: { $exists: false } },
+      { emailVerificationStatus: { $exists: false } },
       { emailVerificationStatus: 'unknown' },
     ],
   }).select('_id email');
