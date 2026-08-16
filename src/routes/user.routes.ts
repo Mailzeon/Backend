@@ -41,7 +41,13 @@ router.put('/profile', async (req: Request, res: Response) => {
   // order.service.ts's gate, which only blocks on a CONFIRMED 'invalid').
   if (typeof email === 'string' && email.trim()) {
     const trimmedEmail = email.trim().toLowerCase();
-    if (trimmedEmail !== req.user!.email) {
+    // Same fix as phone below — only skip if this exact email was
+    // already CONFIRMED valid, not merely "unchanged". Otherwise anyone
+    // whose email came back 'unknown' (inconclusive) or was never
+    // checked at all (pre-Phase-4 accounts) would have no way to trigger
+    // a re-check by re-saving their own already-correct address.
+    const alreadyVerifiedSameEmail = trimmedEmail === req.user!.email && req.user!.emailVerificationStatus === 'valid';
+    if (!alreadyVerifiedSameEmail) {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
         sendError(res, 'Enter a valid email address.', 400); return;
       }
@@ -72,7 +78,21 @@ router.put('/profile', async (req: Request, res: Response) => {
   // transient provider hiccup.
   if (typeof phone === 'string' && phone.trim()) {
     const trimmedPhone = phone.trim();
-    if (trimmedPhone !== req.user!.phone) {
+    // BUG FIX (Aug 2026): this used to skip verification whenever the
+    // submitted number matched what was already saved — but that alone
+    // isn't enough to skip. Every customer/worker who placed an order
+    // BEFORE phone verification existed already had a real phone saved
+    // (see order.service.ts's old fallback, removed in Phase 4) with
+    // phoneVerified defaulting to false. When they'd visit their
+    // profile, see their own correct number already pre-filled, and hit
+    // Save without touching it (the natural thing to do), this "no
+    // change" check skipped verification entirely — permanently
+    // stranding them at "Not verified" with literally no way to fix it,
+    // since resubmitting the identical number never did anything. This
+    // also silently blocked them from ever placing/accepting an order,
+    // since that's gated on phoneVerified being true.
+    const alreadyVerifiedSameNumber = trimmedPhone === req.user!.phone && req.user!.phoneVerified;
+    if (!alreadyVerifiedSameNumber) {
       if (!/^[6-9]\d{9}$/.test(trimmedPhone)) {
         sendError(res, 'Enter a valid 10-digit Indian mobile number.', 400);
         return;
