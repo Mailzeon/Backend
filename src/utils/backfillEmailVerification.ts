@@ -39,12 +39,16 @@ import { checkEmailExists } from './emailVerification';
  * firing everything at once.
  */
 export async function backfillEmailVerification(): Promise<void> {
+  console.log('[Backfill] Email verification check starting...');
+
   const candidates = await User.find({
     $or: [
       { emailVerifiedCheckedAt: { $exists: false } },
       { emailVerificationStatus: 'unknown' },
     ],
   }).select('_id email');
+
+  console.log(`[Backfill] Email verification found ${candidates.length} candidate(s) needing (re-)check.`);
 
   if (candidates.length === 0) return;
 
