@@ -10,6 +10,7 @@ import { seedDefaultSettings }  from './models/Settings.model';
 import { seedAdminUser }        from './utils/seedAdmin';
 import { backfillWasEverApproved } from './utils/backfillwaseverapproved';
 import { backfillEmailVerification } from './utils/backfillEmailVerification';
+import { backfillPhoneVerification } from './utils/backfillPhoneVerification';
 import { env }                  from './config/env';
 
 const server = http.createServer(app);
@@ -45,6 +46,13 @@ const start = async (): Promise<void> => {
     // every restart (naturally becomes a no-op once everyone's checked).
     backfillEmailVerification().catch(err =>
       console.error('[Startup] Email verification backfill failed:', err)
+    );
+    // Same reasoning as above — see utils/backfillPhoneVerification.ts.
+    // Fixes everyone stranded by the just-patched "unchanged number
+    // silently skips verification" bug, without needing them to
+    // manually revisit their profile.
+    backfillPhoneVerification().catch(err =>
+      console.error('[Startup] Phone verification backfill failed:', err)
     );
   } catch (error) {
     console.error('❌ Failed to start server:', error);
