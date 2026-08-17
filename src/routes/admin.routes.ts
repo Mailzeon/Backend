@@ -550,16 +550,59 @@ router.patch('/disputes/:id', async (req: Request, res: Response) => {
 });
 
 // ── Leaderboard ───────────────────────────────────────────────────────────────
+// Admin sees the FULL ranked list (no top-10 cap like the worker/customer-
+// facing leaderboards) — this is a review tool, not a "hall of fame" widget,
+// so admin needs to see everyone who has actually done something on the
+// platform, not just the top performers.
 router.get('/leaderboard', async (_req: Request, res: Response) => {
   // Same fix as leaderboard.routes.ts — only workers who've actually
   // completed at least one order get a meaningful rank; otherwise a batch
   // of freshly-reset/registered workers all tied at 0 would show up
   // ordered by MongoDB's natural/insertion order, which looks like a real
-  // but meaningless ranking.
+  // but meaningless ranking. This also naturally excludes workers who
+  // signed up and never did anything ("registered then went idle").
   const top = await WorkerLevelModel.find({ completedOrders: { $gt: 0 } })
     .populate('workerId', 'name email profileImage level')
-    .sort({ completedOrders: -1, averageRating: -1, _id: 1 })
-    .limit(10);
+    .sort({ completedOrders: -1, averageRating: -1, _id: 1 });
+  sendSuccess(res, 'Leaderboard fetched.', top);
+});
+
+// Customer leaderboard, admin view — same "full list, real activity only"
+// shape as the worker one above. No CustomerLevel collection exists (unlike
+// WorkerLevel for workers), so this aggregates directly off completed
+// Orders, same query as the customer-facing GET /api/leaderboard/customer,
+// just without the top-10 limit.
+router.get('/leaderboard/customer', async (_req: Request, res: Response) => {
+  const top = await Order.aggregate([
+    { $match: { status: 'completed' } },
+    {
+      $group: {
+        _id: '$customerId',
+        completedOrders: { $sum: 1 },
+        totalSpent: { $sum: '$amount' },
+      },
+    },
+    { $sort: { completedOrders: -1, totalSpent: -1, _id: 1 } },
+    {
+      $lookup: {
+        from: 'users',
+        localField: '_id',
+        foreignField: '_id',
+        as: 'customer',
+      },
+    },
+    { $unwind: '$customer' },
+    {
+      $project: {
+        _id: 1,
+        completedOrders: 1,
+        totalSpent: 1,
+        'customer.name': 1,
+        'customer.email': 1,
+        'customer.profileImage': 1,
+      },
+    },
+  ]);
   sendSuccess(res, 'Leaderboard fetched.', top);
 });
 
