@@ -114,6 +114,20 @@ export interface IOrder extends Document {
   autoCompleteAt?: Date;
   completedAt?: Date;
 
+  // NEW — set whenever the accept-timer expires WITHOUT confirmed theft
+  // (order goes back to 'pending' for someone else to pick up) — see
+  // utils/orderTimer.ts. Survives even after `workerId` is cleared back to
+  // null, so that if the SAME requested email later turns out to be taken
+  // (caught on a subsequent worker's accept attempt — see
+  // acceptOrder() below — rather than at that original expiry moment,
+  // e.g. because the verification API was transiently down and failed
+  // open), we can still correctly identify and permanently ban the worker
+  // who actually abandoned it, instead of losing that trail entirely.
+  // Intentionally NOT cleared on a normal successful accept — it's a
+  // historical breadcrumb, not live state, and the full picture is also
+  // captured in OrderHistory regardless.
+  lastAbandonedWorkerId?: Types.ObjectId;
+
   // ── Wrong-password dispute grace window ──────────────────────────────
   // See utils/disputeGrace.ts + order.service.ts reportProblem()/
   // resubmitCredentials(). When a customer disputes with reason
@@ -259,6 +273,7 @@ const OrderSchema = new Schema<IOrder>(
     credentialsSubmittedAt: Date,
     autoCompleteAt: Date,
     completedAt: Date,
+    lastAbandonedWorkerId: { type: Schema.Types.ObjectId, ref: 'User' },
     wrongPasswordGraceDeadline: Date,
     wrongPasswordGraceUsed: { type: Boolean, default: false },
     wrongPasswordPenaltyAmount: Number,
