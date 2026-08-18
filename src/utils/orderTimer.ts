@@ -11,9 +11,11 @@
  */
 
 import { Order } from '../models/Order.model';
+import { Types } from 'mongoose';
 import { notificationService } from '../services/notification.service';
 import { userService } from '../services/user.service';
 import { walletService } from '../services/wallet.service';
+import { orderHistoryService } from '../services/orderHistory.service';
 import { checkEmailExists } from './emailVerification';
 import { emitToMarketplace, EVENTS } from '../socket/events';
 
@@ -91,6 +93,19 @@ export const handleOrderTimerExpiry = async (
       orderId: order._id,
     });
 
+    await orderHistoryService.log(orderId, 'theft_confirmed', {
+      actorId: workerId, actorRole: 'worker',
+      message: `Confirmed theft: requested address ${order.requestedEmail} existed after the 10-minute timer expired with no credentials submitted. Worker permanently banned (account + IP + device).`,
+    });
+    await orderHistoryService.log(orderId, 'cancelled', {
+      actorRole: 'system',
+      message: `Order cancelled — the requested email is now permanently unavailable to anyone else, so it cannot be reassigned.`,
+    });
+    await orderHistoryService.log(orderId, 'refunded', {
+      actorRole: 'system',
+      message: `₹${order.amount} refunded to customer's Mailzeon wallet.`,
+    });
+
     return;
   }
 
@@ -98,6 +113,12 @@ export const handleOrderTimerExpiry = async (
   order.workerId       = undefined;
   order.acceptedAt      = undefined;
   order.timerExpiresAt = undefined;
+  // See the field comment on Order.model.ts — kept even after workerId is
+  // cleared, so a later accept-time recheck (see order.service.ts
+  // acceptOrder()) can still correctly attribute blame if this turns out
+  // to have actually been theft that this expiry-check's API call missed
+  // (e.g. a transient Abstract API failure that fail-opened to 'unknown').
+  order.lastAbandonedWorkerId = new Types.ObjectId(workerId);
   await order.save();
 
   // Re-broadcast to marketplace so other workers can see it
@@ -123,6 +144,11 @@ export const handleOrderTimerExpiry = async (
     message: 'The previous worker did not complete your order in time. It is now available for another worker.',
     type:    'order',
     orderId: order._id,
+  });
+
+  await orderHistoryService.log(orderId, 'expired_returned', {
+    actorId: workerId, actorRole: 'worker',
+    message: `10-minute timer expired with no credentials submitted. Requested address not found to exist at this time — order returned to the marketplace for another worker.`,
   });
 };
 
