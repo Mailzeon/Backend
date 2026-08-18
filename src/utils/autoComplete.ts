@@ -5,6 +5,7 @@ import { walletService }      from '../services/wallet.service';
 import { paymentService }     from '../services/payment.service';
 import { workerLevelService } from '../services/workerLevel.service';
 import { userService }        from '../services/user.service';
+import { orderHistoryService } from '../services/orderHistory.service';
 import { handleOrderTimerExpiry } from './orderTimer';
 import { escalateWrongPasswordGrace } from './disputeGrace';
 import { emitToUser, EVENTS } from '../socket/events';
@@ -149,6 +150,11 @@ async function autoCompleteAbandonedByCustomer(now: Date): Promise<void> {
       });
       emitToUser(customerId, EVENTS.ORDER_COMPLETED, { orderId: order._id, notification: customerNotif });
 
+      await orderHistoryService.log(order._id.toString(), 'auto_completed', {
+        actorRole: 'system',
+        message: `Auto-completed after 24 hours of no customer response. Worker earnings released.`,
+      });
+
       workerLevelService.recalculate(workerId).catch(err =>
         console.error(`[AutoComplete][WorkerLevel] Failed for worker ${workerId}:`, err)
       );
@@ -220,6 +226,11 @@ async function autoCancelUnresponsiveWorker(now: Date): Promise<void> {
         customerId, order.amount, order._id,
         `Refund: Order #${orderRef} (worker unresponsive to verification request)`
       );
+
+      await orderHistoryService.log(order._id.toString(), 'auto_cancelled_worker_unresponsive', {
+        actorId: workerId, actorRole: 'system',
+        message: `Auto-cancelled — worker ${reasonLabel} within 24 hours. Pending earnings reversed, customer refunded ₹${order.amount}, strike applied.`,
+      });
 
       await Promise.all([
         Notification.create({
