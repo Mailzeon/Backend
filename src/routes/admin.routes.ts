@@ -27,6 +27,7 @@ import { invalidateSettingsCache } from '../services/order.service';
 import { emitToUser, EVENTS }  from '../socket/events';
 import { computeLiveOnlineWorkerCount } from '../socket/socket';
 import { userService } from '../services/user.service';
+import { orderHistoryService } from '../services/orderHistory.service';
 import { sendSuccess, sendError } from '../utils/response';
 import { Request, Response }  from 'express';
 
@@ -252,6 +253,14 @@ router.get('/orders', async (req: Request, res: Response) => {
     page:       Number(page),
     totalPages: Math.ceil(total / Number(limit)),
   });
+});
+
+// Full chronological event history for one order — powers the "View
+// History" timeline in the admin All Orders panel. See
+// services/orderHistory.service.ts / models/OrderHistory.model.ts.
+router.get('/orders/:id/history', async (req: Request, res: Response) => {
+  const history = await orderHistoryService.getForOrder(req.params.id);
+  sendSuccess(res, 'Order history fetched.', history);
 });
 
 // ── All users ─────────────────────────────────────────────────────────────────
