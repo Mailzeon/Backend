@@ -10,6 +10,8 @@ import { walletService }        from './wallet.service';
 import { notificationService }  from './notification.service';
 import { workerLevelService }   from './workerLevel.service';
 import { paymentService }       from './payment.service';
+import { userService }          from './user.service';
+import { orderHistoryService }  from './orderHistory.service';
 import { startOrderTimer, clearOrderTimer } from '../utils/orderTimer';
 import { scheduleGraceEscalation, clearGraceTimer } from '../utils/disputeGrace';
 import { checkEmailExists } from '../utils/emailVerification';
@@ -223,6 +225,11 @@ export const orderService = {
       walletAmountApplied,
     });
 
+    await orderHistoryService.log(order._id.toString(), 'created', {
+      actorId: customerId, actorRole: 'customer',
+      message: `Order created — ${serviceName.trim()} (${emailType === 'custom' ? requestedEmail : `any @${domain}`}), ₹${amount}.`,
+    });
+
     if (walletAmountApplied > 0) {
       const orderRef = order._id.toString().slice(-6).toUpperCase();
       await Transaction.create({
@@ -305,6 +312,15 @@ export const orderService = {
       message: `Order #${orderRef} was cancelled and ₹${order!.amount} has been credited to your Mailzeon wallet — use it on your next order.`,
       type: 'order',
       orderId: order!._id,
+    });
+
+    await orderHistoryService.log(orderId, 'cancelled', {
+      actorId: customerId, actorRole: 'customer',
+      message: `Cancelled by customer before any worker accepted.`,
+    });
+    await orderHistoryService.log(orderId, 'refunded', {
+      actorRole: 'system',
+      message: `₹${order!.amount} refunded to customer's Mailzeon wallet.`,
     });
 
     return order!;
@@ -411,6 +427,88 @@ export const orderService = {
       throwErr('Your account email does not appear to be valid. Please update it in your profile before accepting orders.', 403);
     }
 
+    // ── Live re-check: is the requested email already taken? ─────────────
+    // Runs on EVERY accept attempt (not just the original one) for
+    // 'custom' orders — defense in depth against the case where the
+    // 10-minute expiry check (utils/orderTimer.ts) missed confirmed theft,
+    // e.g. because the Abstract API call transiently failed/timed out and
+    // fail-opened the order back to 'pending' (see checkEmailExists()'s
+    // 'unknown' handling). 'random' orders have no single target address
+    // to verify against, so this check is skipped for them entirely —
+    // same gating as the expiry-time check.
+    const target = await Order.findOne({ _id: orderId, status: 'pending', workerId: null })
+      .select('emailType requestedEmail lastAbandonedWorkerId customerId amount');
+    if (!target) throwErr('This order is no longer available.', 409);
+
+    if (target!.emailType === 'custom' && target!.requestedEmail) {
+      let emailTaken = false;
+      try {
+        emailTaken = (await checkEmailExists(target!.requestedEmail)) === 'valid';
+      } catch (err) {
+        // Same fail-open philosophy as everywhere else this check runs —
+        // never let a verification-API hiccup block a genuine accept.
+        console.error('[AcceptOrder] Email recheck failed:', err);
+      }
+
+      if (emailTaken) {
+        const orderRef = target!._id.toString().slice(-6).toUpperCase();
+        const custId    = target!.customerId.toString();
+
+        await Order.findOneAndUpdate(
+          { _id: orderId, status: 'pending' },
+          { status: 'cancelled', workerId: null, acceptedAt: undefined, timerExpiresAt: undefined }
+        );
+
+        await walletService.creditRefund(
+          custId, target!.amount, target!._id,
+          `Refund: Order #${orderRef} (requested email confirmed taken — order could not be fulfilled)`
+        );
+        await notificationService.create({
+          userId:  custId,
+          title:   'We\'re sorry — your order was cancelled and refunded',
+          message: `The email address you requested for Order #${orderRef} has already been created and can no longer be delivered to you. We've cancelled the order and credited ₹${target!.amount} to your Mailzeon wallet.`,
+          type:    'order',
+          orderId: target!._id,
+        });
+
+        // Only the worker who actually abandoned it (recorded on the
+        // order the last time its timer expired without submission) is
+        // held responsible — NOT the worker who just tried to accept and
+        // simply discovered it was already taken. If there's no such
+        // worker on record (e.g. a very rare race right at order
+        // creation), nobody is banned — there's no one to blame.
+        if (target!.lastAbandonedWorkerId) {
+          const bannedWorkerId = target!.lastAbandonedWorkerId.toString();
+          await userService.applyTheftPenalty(
+            bannedWorkerId, target!._id.toString(), target!.requestedEmail!, 'email_never_submitted'
+          ).catch(err => console.error('[AcceptOrder] Failed to apply theft penalty on recheck:', err));
+
+          await orderHistoryService.log(orderId, 'theft_confirmed', {
+            actorId: bannedWorkerId, actorRole: 'worker',
+            message: `Confirmed theft (caught on a later worker's accept attempt, not at original expiry): requested address ${target!.requestedEmail} exists. Worker permanently banned (account + IP + device).`,
+          });
+        }
+
+        await orderHistoryService.log(orderId, 'accept_blocked_email_taken', {
+          actorId: workerId, actorRole: 'worker',
+          message: `Accept attempt blocked — requested email already taken. This worker was NOT accepting yet and is not penalized.`,
+        });
+        await orderHistoryService.log(orderId, 'cancelled', {
+          actorRole: 'system',
+          message: `Order cancelled — the requested email is confirmed unavailable to anyone.`,
+        });
+        await orderHistoryService.log(orderId, 'refunded', {
+          actorRole: 'system',
+          message: `₹${target!.amount} refunded to customer's Mailzeon wallet.`,
+        });
+
+        throwErr(
+          'This order can no longer be accepted — the requested email address has already been created (most likely by a previous worker) and the order has been cancelled with a full refund to the customer.',
+          409
+        );
+      }
+    }
+
     const timerMinutes = parseInt(await getSetting('orderTimerMinutes', '10'));
     const now          = new Date();
     const timerExpires = new Date(now.getTime() + timerMinutes * 60 * 1000);
@@ -446,6 +544,11 @@ export const orderService = {
 
     const customerId = order!.customerId.toString();
     startOrderTimer(orderId, workerId, customerId, timerMinutes);
+
+    await orderHistoryService.log(orderId, 'accepted', {
+      actorId: workerId, actorRole: 'worker',
+      message: `Accepted by ${workerName}. ${timerMinutes}-minute credential-submission timer started.`,
+    });
 
     await notificationService.create({
       userId:  customerId,
@@ -513,6 +616,12 @@ export const orderService = {
     );
 
     const customerId = order!.customerId.toString();
+
+    await orderHistoryService.log(orderId, 'credentials_submitted', {
+      actorId: workerId, actorRole: 'worker',
+      message: `Worker submitted account credentials (${submittedEmail}). Auto-completes in ${autoHours}h if the customer doesn't respond.`,
+    });
+
     await notificationService.create({
       userId:  customerId,
       title:   '✅ Credentials Ready!',
@@ -601,6 +710,12 @@ export const orderService = {
     ]);
 
     emitToUser(customerId, EVENTS.CREDENTIALS_READY, { orderId });
+
+    await orderHistoryService.log(orderId, 'wrong_password_resubmitted', {
+      actorId: workerId, actorRole: 'worker',
+      message: `Worker resubmitted corrected credentials after a wrong-password report. ${penaltyRate}% penalty (₹${penaltyAmount}) locked in against this order's earning.`,
+    });
+
     return order!;
   },
 
@@ -736,6 +851,11 @@ export const orderService = {
       `Earned: Order #${order._id.toString().slice(-6).toUpperCase()}`
     );
 
+    await orderHistoryService.log(orderId, 'completed', {
+      actorId: customerId, actorRole: 'customer',
+      message: `Customer confirmed the account works. Order completed, worker earnings released.`,
+    });
+
     await Promise.all([
       notificationService.create({
         userId:  workerId,
@@ -799,6 +919,11 @@ export const orderService = {
 
       scheduleGraceEscalation(orderId, graceMinutes * 60 * 1000);
 
+      await orderHistoryService.log(orderId, 'wrong_password_grace_granted', {
+        actorId: customerId, actorRole: 'customer',
+        message: `Customer reported wrong password (first offense). Worker given ${graceMinutes} minutes to resubmit correct credentials before this escalates to admin.`,
+      });
+
       await Promise.all([
         notificationService.create({
           userId:  workerId,
@@ -819,6 +944,114 @@ export const orderService = {
       return order;
     }
 
+    // ── "Account doesn't exist" — smart instant-verify, no admin needed ──
+    // Unlike wrong_password (which needs a human to actually try logging
+    // in), whether the submitted account exists at all is something
+    // Abstract's Email Reputation API can check directly and immediately
+    // — so this reason short-circuits straight to a verified outcome
+    // instead of sitting in the admin queue for a fact the API can
+    // already settle. Checks the ACTUALLY-SUBMITTED credentials email
+    // (order.credentials.email), not the original requestedEmail — this
+    // makes it work for BOTH custom AND random-domain orders, since
+    // random orders have no fixed target address to check against, only
+    // whatever the worker actually submitted.
+    if (reason === 'account_not_found') {
+      const submittedEmail = order.credentials?.email;
+      if (!submittedEmail) throwErr('No credentials have been submitted on this order yet.', 400);
+
+      let emailStatus: 'valid' | 'invalid' | 'unknown' = 'unknown';
+      try {
+        emailStatus = await checkEmailExists(submittedEmail);
+      } catch (err) {
+        console.error('[ReportProblem] account_not_found verification failed:', err);
+      }
+
+      if (emailStatus === 'valid') {
+        // The account genuinely exists — the customer's claim doesn't
+        // hold up against a live check. Blocked outright: no dispute
+        // created, no admin involvement, and the customer isn't
+        // penalized either — just redirected to the reason that
+        // actually fits if they truly can't log in.
+        throwErr(
+          `We checked — ${submittedEmail} does exist. If you're having trouble logging in with the ` +
+          `credentials provided, please select "Wrong password — cannot log in" instead so we can look ` +
+          `into that specifically.`,
+          400
+        );
+      }
+
+      if (emailStatus === 'invalid') {
+        // Confirmed: the account genuinely does not exist. The worker
+        // failed to deliver a working account — auto-resolved immediately,
+        // no admin review needed, since the one fact that mattered here is
+        // already settled. This gets the normal ESCALATING STRIKE (same as
+        // any other upheld dispute), NOT a permanent ban — permanent bans
+        // are reserved for the two specifically-confirmed-theft paths
+        // (timer-expiry email-already-taken, and a second wrong_password
+        // offense past the grace window). This is a delivery failure, not
+        // proven theft, so it follows the normal strike ladder.
+        order.status = 'cancelled';
+        await order.save();
+
+        await walletService.reversePendingEarnings(
+          workerId, order.workerEarning, order._id,
+          `Reversed: Order #${orderRef} (submitted account confirmed non-existent)`
+        );
+        await walletService.creditRefund(
+          customerId, order.amount, order._id,
+          `Refund: Order #${orderRef} (submitted account doesn't exist — auto-verified)`
+        );
+
+        const { strikeCount } = await userService.applyStrike(workerId)
+          .catch(err => { console.error('[ReportProblem] Failed to apply strike:', err); return { strikeCount: undefined as unknown as number, lockedUntil: undefined as unknown as Date }; });
+
+        emitToUser(workerId,   EVENTS.ORDER_CANCELLED, { orderId: order._id });
+        emitToUser(customerId, EVENTS.ORDER_CANCELLED, { orderId: order._id });
+
+        await orderHistoryService.log(orderId, 'dispute_reported', {
+          actorId: customerId, actorRole: 'customer',
+          message: `Customer reported the submitted account doesn't exist.`,
+        });
+        await orderHistoryService.log(orderId, 'dispute_resolved_upheld', {
+          actorId: workerId, actorRole: 'worker',
+          message: `Auto-verified: ${submittedEmail} does not exist. Strike #${strikeCount ?? '?'} applied to worker. Resolved instantly, no admin review needed.`,
+        });
+        await orderHistoryService.log(orderId, 'cancelled', {
+          actorRole: 'system',
+          message: `Order cancelled automatically — submitted account confirmed non-existent.`,
+        });
+        await orderHistoryService.log(orderId, 'refunded', {
+          actorRole: 'system',
+          message: `₹${order.amount} refunded to customer's Mailzeon wallet.`,
+        });
+
+        await notificationService.create({
+          userId:  workerId,
+          title:   '⚠️ Confirmed: Account Doesn\'t Exist',
+          message: `We verified that ${submittedEmail} (which you submitted for order #${orderRef}) doesn't ` +
+            `exist. The order has been cancelled and refunded, and a strike has been applied to your account.`,
+          type:    'dispute',
+          orderId: order._id,
+        });
+
+        await notificationService.create({
+          userId:  customerId,
+          title:   '✅ Confirmed — Refund Issued',
+          message: `We verified that ${submittedEmail} doesn't exist. Your order has been cancelled and ` +
+            `₹${order.amount} refunded to your wallet immediately — no need to wait for admin review.`,
+          type:    'order',
+          orderId: order._id,
+        });
+
+        return order;
+      }
+
+      // emailStatus === 'unknown' (API inconclusive) — fall through to the
+      // normal admin-review dispute path below. Same fail-open philosophy
+      // used everywhere else this check runs: we don't auto-refund OR
+      // auto-block on a result we can't actually confirm either way.
+    }
+
     order.status = 'under_review';
     await order.save();
 
@@ -830,6 +1063,11 @@ export const orderService = {
         workerId:   order.workerId,
         reason,
         description,
+      });
+
+      await orderHistoryService.log(orderId, 'dispute_reported', {
+        actorId: customerId, actorRole: 'customer',
+        message: `Customer raised a dispute — reason: ${reason}${description ? ` ("${description}")` : ''}.`,
       });
 
       const admins = await User.find({ role: 'admin' }).select('_id');
