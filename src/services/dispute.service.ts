@@ -7,6 +7,7 @@ import { WorkerLevelModel } from '../models/WorkerLevel.model';
 import { walletService } from './wallet.service';
 import { workerLevelService } from './workerLevel.service';
 import { userService } from './user.service';
+import { orderHistoryService } from './orderHistory.service';
 import { emitToUser, EVENTS } from '../socket/events';
 
 const throwErr = (msg: string, code = 400): never => {
@@ -24,6 +25,11 @@ export const disputeService = {
 
     const dispute = await Dispute.create({
       orderId, customerId, workerId: order!.workerId, reason, description,
+    });
+
+    await orderHistoryService.log(orderId, 'dispute_reported', {
+      actorId: customerId, actorRole: 'customer',
+      message: `Customer raised a dispute — reason: ${reason}${description ? ` ("${description}")` : ''}.`,
     });
 
     const admins = await User.find({ role: 'admin' }).select('_id');
@@ -149,6 +155,11 @@ export const disputeService = {
           `Refund: Order #${orderRef} (dispute resolved in your favor)`
         );
 
+        await orderHistoryService.log(order._id.toString(), 'refunded', {
+          actorRole: 'system',
+          message: `₹${order.amount} refunded to customer's Mailzeon wallet (dispute upheld).`,
+        });
+
         await Promise.all([
           Notification.create({
             userId: workerId,
@@ -167,6 +178,11 @@ export const disputeService = {
         emitToUser(workerId,   EVENTS.ORDER_CANCELLED, { orderId: order._id });
         emitToUser(customerId, EVENTS.ORDER_CANCELLED, { orderId: order._id });
 
+        await orderHistoryService.log(order._id.toString(), 'dispute_resolved_upheld', {
+          actorRole: 'admin',
+          message: `Admin resolved the dispute in the customer's favor (reason: ${dispute!.reason}). Order cancelled, worker's pending earnings reversed, customer refunded ₹${order.amount}.`,
+        });
+
         // Penalty depends on WHAT was upheld:
         //   'wrong_password' — the worker already had a fair, explicit
         //     chance to fix this via the grace window (see
@@ -183,6 +199,10 @@ export const disputeService = {
           ).catch(err =>
             console.error('[Dispute] Failed to apply theft penalty after resolve:', err)
           );
+          await orderHistoryService.log(order._id.toString(), 'theft_confirmed', {
+            actorId: workerId, actorRole: 'worker',
+            message: `Confirmed theft: admin upheld a wrong-password dispute after the worker already had one grace-window chance to correct it. Worker permanently banned (account + IP + device).`,
+          });
         } else {
           await userService.applyStrike(workerId).catch(err =>
             console.error('[Dispute] Failed to apply strike after resolve:', err)
@@ -197,6 +217,11 @@ export const disputeService = {
         await walletService.settleOrderEarnings(
           order, `Earned: Order #${orderRef} (dispute rejected)`
         );
+
+        await orderHistoryService.log(order._id.toString(), 'dispute_resolved_rejected', {
+          actorRole: 'admin',
+          message: `Admin rejected the customer's dispute. Order completed, worker earnings released.`,
+        });
 
         await Promise.all([
           Notification.create({
