@@ -107,6 +107,24 @@ export const seedDefaultSettings = async (): Promise<void> => {
       value: '3',
       description: 'Percent of a referred worker\'s earning paid to their referrer on every completed order',
     },
+    // ── Customer referral program ─────────────────────────────────────────
+    // See order.service.ts createOrder() / wallet.service.ts
+    // settleOrderEarnings() — this percentage is ALSO deducted from the
+    // fulfilling WORKER's earning (same funding source as the worker
+    // referral tax above — it's the order's own margin/split being
+    // redistributed, never an extra platform cost) whenever the CUSTOMER
+    // placing the order was referred by another customer, and paid to
+    // that referring customer's wallet. Deliberately kept as its own
+    // separate setting/field from referralTaxRate above even though the
+    // mechanism is similar — they're two independent programs (worker→
+    // worker vs customer→customer) that an admin may want to tune
+    // differently, and mixing their accounting would make it impossible
+    // to see how much either program actually costs on its own.
+    {
+      key: 'customerReferralBonusRate',
+      value: '3',
+      description: 'Percent deducted from the fulfilling worker\'s earning and paid to a referring customer, on every order placed by the customer they referred',
+    },
     // ── Wrong-password dispute grace window ──────────────────────────────
     // See utils/disputeGrace.ts / order.service.ts reportProblem(). Gives
     // a worker one timed chance to fix a wrong password BEFORE the
