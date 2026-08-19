@@ -1,4 +1,5 @@
 import { Order, IOrder }        from '../models/Order.model';
+import { Types }                from 'mongoose';
 import { Dispute }              from '../models/Dispute.model';
 import { RefundRequest }        from '../models/RefundRequest.model';
 import { Transaction }          from '../models/Transaction.model';
@@ -51,18 +52,24 @@ export const getPublicSettings = async (): Promise<{
   platformCommissionRate: number;
   orderTimerMinutes: number;
   autoCompleteHours: number;
+  referralTaxRate: number;
+  customerReferralBonusRate: number;
 }> => {
-  const [minimumOrderAmount, platformCommissionRate, orderTimerMinutes, autoCompleteHours] = await Promise.all([
+  const [minimumOrderAmount, platformCommissionRate, orderTimerMinutes, autoCompleteHours, referralTaxRate, customerReferralBonusRate] = await Promise.all([
     getSetting('minimumOrderAmount', '15'),
     getSetting('platformCommissionRate', '15'),
     getSetting('orderTimerMinutes', '10'),
     getSetting('autoCompleteHours', '24'),
+    getSetting('referralTaxRate', '3'),
+    getSetting('customerReferralBonusRate', '3'),
   ]);
   return {
     minimumOrderAmount: parseInt(minimumOrderAmount),
     platformCommissionRate: parseInt(platformCommissionRate),
     orderTimerMinutes: parseInt(orderTimerMinutes),
     autoCompleteHours: parseInt(autoCompleteHours),
+    referralTaxRate: parseFloat(referralTaxRate),
+    customerReferralBonusRate: parseFloat(customerReferralBonusRate),
   };
 };
 
@@ -128,6 +135,30 @@ export const orderService = {
     const platformCommission = Math.round(amount * commissionRate * 100) / 100;
     const workerEarning      = Math.round((amount - platformCommission) * 100) / 100;
 
+    // ── Customer referral bonus ─────────────────────────────────────────
+    // Locked in HERE, at order creation — unlike the worker referral tax
+    // (which waits for accept, since it depends on which worker takes the
+    // job), this only depends on the CUSTOMER placing the order, which we
+    // already know right now. platformCommission/workerEarning above are
+    // computed the SAME regardless — this doesn't touch either of them.
+    // It's paid out of the fulfilling worker's own earning at settlement
+    // (see wallet.service.ts settleOrderEarnings()), same funding
+    // mechanism as the worker referral tax, just a separate/independent
+    // setting and pool. Fetches the FULL customer doc (not just
+    // referredBy) since the phone/email checks further below need it too
+    // — one lookup instead of two.
+    const customer = await User.findById(customerId);
+    if (!customer) throwErr('Customer not found.', 404);
+
+    let customerReferralBonusRate: number | undefined;
+    let customerReferralBonusAmount: number | undefined;
+    let customerReferrerId: Types.ObjectId | undefined;
+    if (customer!.referredBy) {
+      customerReferralBonusRate = parseFloat(await getSetting('customerReferralBonusRate', '3'));
+      customerReferralBonusAmount = Math.round(workerEarning * (customerReferralBonusRate / 100) * 100) / 100;
+      customerReferrerId = customer!.referredBy as Types.ObjectId;
+    }
+
     // 'custom': requestedEmail is the exact address the worker must create.
     // 'random': requestedEmail stays unset — the worker submits ANY address
     // on `domain` (see submitCredentials() below), so no fake email needs
@@ -158,9 +189,6 @@ export const orderService = {
       // verify up front; this is just the final safety net right before
       // the order is actually created.
     }
-
-    const customer = await User.findById(customerId);
-    if (!customer) throwErr('Customer not found.', 404);
 
     // Phone is now mandatory + verified at registration/profile level (see
     // auth.service.ts register() / user.routes.ts PUT /profile) — no more
@@ -223,6 +251,9 @@ export const orderService = {
       status: 'payment_pending',
       paymentStatus: 'pending',
       walletAmountApplied,
+      customerReferralBonusRate,
+      customerReferralBonusAmount,
+      customerReferrerId,
     });
 
     await orderHistoryService.log(order._id.toString(), 'created', {
@@ -349,15 +380,25 @@ export const orderService = {
   // deduction happened — no tax rate, no raw/gross figure to compare
   // against, nothing. workerEarning is silently replaced with the net
   // amount so the order looks completely indistinguishable from one with
-  // no referral involved at all. Only ever called on worker-facing paths —
+  // no referral involved at all. Handles BOTH kinds of referral deduction
+  // that can stack on the same order (the worker's own referral tax, AND
+  // the customer's referral bonus — two independent programs, see
+  // Order.model.ts field comments) — worker only ever sees one final
+  // number either way. Only ever called on worker-facing paths —
   // admin/dispute views intentionally keep the real fields.
   applyReferralDeduction(orderObj: any): any {
     if (orderObj.referralTaxAmount) {
       orderObj.workerEarning = Math.round((orderObj.workerEarning - orderObj.referralTaxAmount) * 100) / 100;
     }
+    if (orderObj.customerReferralBonusAmount) {
+      orderObj.workerEarning = Math.round((orderObj.workerEarning - orderObj.customerReferralBonusAmount) * 100) / 100;
+    }
     delete orderObj.referralTaxAmount;
     delete orderObj.referralTaxRate;
     delete orderObj.referrerId;
+    delete orderObj.customerReferralBonusAmount;
+    delete orderObj.customerReferralBonusRate;
+    delete orderObj.customerReferrerId;
     return orderObj;
   },
 
@@ -381,13 +422,27 @@ export const orderService = {
       taxRate = parseFloat(await getSetting('referralTaxRate', '3'));
     }
 
-    const adjusted = orders.map(o => ({
-      ...o,
-      requestedEmail: o.requestedEmail ? orderService.maskRequestedEmail(o.requestedEmail) : o.requestedEmail,
-      workerEarning: taxRate > 0
+    const adjusted = orders.map(o => {
+      let earning = taxRate > 0
         ? Math.round(o.workerEarning * (1 - taxRate / 100) * 100) / 100
-        : o.workerEarning,
-    }));
+        : o.workerEarning;
+      // Unlike the worker-tax preview above (which depends on the
+      // VIEWING worker), this depends on the ORDER's own customer and is
+      // already locked in on the order document itself at creation time
+      // — so it applies the same way for every worker browsing the
+      // marketplace, not just this one. Still computed here (not stored
+      // pre-subtracted on the order) so admin/dispute views can keep
+      // seeing the real gross figure.
+      if (o.customerReferralBonusAmount) {
+        earning = Math.round((earning - o.customerReferralBonusAmount) * 100) / 100;
+      }
+      const { customerReferralBonusAmount, customerReferralBonusRate, customerReferrerId, ...rest } = o as any;
+      return {
+        ...rest,
+        requestedEmail: o.requestedEmail ? orderService.maskRequestedEmail(o.requestedEmail) : o.requestedEmail,
+        workerEarning: earning,
+      };
+    });
 
     return adjusted as unknown as IOrder[];
   },
