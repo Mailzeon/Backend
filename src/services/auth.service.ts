@@ -143,7 +143,9 @@ export const authService = {
       }
     }
 
-    // ── Referral program (workers only) ────────────────────────────────
+    // ── Referral program (workers AND customers, each a separate/
+    // independent program — see Order.model.ts field comments for the
+    // customer side) ───────────────────────────────────────────────────
     // Resolved and validated BEFORE creating the user, but any problem
     // here (bad code, self-referral, same-IP fraud) is deliberately
     // silent — it just means no referral relationship gets recorded,
@@ -152,24 +154,27 @@ export const authService = {
     let referredBy: Types.ObjectId | undefined;
     let newReferralCode: string | undefined;
 
-    if (role === 'worker') {
-      newReferralCode = await generateUniqueReferralCode();
+    newReferralCode = await generateUniqueReferralCode();
 
-      if (referralCode?.trim()) {
-        const referrer = await User.findOne({
-          referralCode: referralCode.trim().toUpperCase(),
-          role: 'worker',
-        }).select('_id registrationIp lastLoginIp registrationDevice lastLoginDevice');
+    if (referralCode?.trim()) {
+      // A referral code only ever resolves against a referrer of the SAME
+      // role as the person registering — a worker's code can't accidentally
+      // enroll a new customer into the worker program or vice versa. These
+      // are two separate reward pools (see wallet.service.ts
+      // settleOrderEarnings()) with independent settings.
+      const referrer = await User.findOne({
+        referralCode: referralCode.trim().toUpperCase(),
+        role,
+      }).select('_id registrationIp lastLoginIp registrationDevice lastLoginDevice');
 
-        if (referrer) {
-          const sameIp = !!ip && (referrer.registrationIp === ip || referrer.lastLoginIp === ip);
-          const sameDevice = !!deviceId && (referrer.registrationDevice === deviceId || referrer.lastLoginDevice === deviceId);
-          if (!sameIp && !sameDevice) {
-            referredBy = referrer._id;
-          }
-          // else: silently drop it — almost certainly a self-referral
-          // attempt from the same device/network.
+      if (referrer) {
+        const sameIp = !!ip && (referrer.registrationIp === ip || referrer.lastLoginIp === ip);
+        const sameDevice = !!deviceId && (referrer.registrationDevice === deviceId || referrer.lastLoginDevice === deviceId);
+        if (!sameIp && !sameDevice) {
+          referredBy = referrer._id;
         }
+        // else: silently drop it — almost certainly a self-referral
+        // attempt from the same device/network.
       }
     }
 
