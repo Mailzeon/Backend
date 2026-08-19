@@ -54,6 +54,20 @@ export interface IOrder extends Document {
   referralTaxAmount?: number; // rupees, deducted from workerEarning
   referrerId?: Types.ObjectId; // who receives referralTaxAmount
 
+  // NEW — customer referral bonus (see order.service.ts createOrder() /
+  // wallet.service.ts settleOrderEarnings()). Locked in at ORDER CREATION
+  // time, unlike the worker referral tax above — the customer's
+  // referredBy is already known the moment they place the order (no need
+  // to wait for a worker to accept, since this depends on the CUSTOMER's
+  // referral relationship, not the worker's). Deducted from the same
+  // fulfilling worker's earning at settlement, alongside referralTaxAmount
+  // above if both happen to apply — the two programs are independent and
+  // can stack. Only set when the customer placing this order was
+  // themselves referred by another customer.
+  customerReferralBonusRate?: number;   // percentage, e.g. 3
+  customerReferralBonusAmount?: number; // rupees, deducted from workerEarning at settlement
+  customerReferrerId?: Types.ObjectId;  // which referring customer receives it
+
   // The exact email address the customer wants created for this order.
   // Only set when emailType === 'custom'. For 'random' orders this is left
   // undefined on purpose — see `domain` and `emailType` below — the worker
@@ -229,6 +243,10 @@ const OrderSchema = new Schema<IOrder>(
     referralTaxRate: { type: Number },
     referralTaxAmount: { type: Number },
     referrerId: { type: Schema.Types.ObjectId, ref: 'User' },
+
+    customerReferralBonusRate: { type: Number },
+    customerReferralBonusAmount: { type: Number },
+    customerReferrerId: { type: Schema.Types.ObjectId, ref: 'User' },
 
     requestedEmail: {
       type: String,
