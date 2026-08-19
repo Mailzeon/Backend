@@ -98,6 +98,8 @@ export const walletService = {
       workerEarning: number;
       referralTaxAmount?: number;
       referrerId?: Types.ObjectId | string;
+      customerReferralBonusAmount?: number;
+      customerReferrerId?: Types.ObjectId | string;
       wrongPasswordPenaltyAmount?: number;
     },
     baseDescription: string
@@ -106,6 +108,12 @@ export const walletService = {
     const workerId   = order.workerId.toString();
     const grossAmount = order.workerEarning;
     const taxAmount   = order.referralTaxAmount ?? 0;
+    // Independent from the worker's own referral tax above — this one
+    // applies when the CUSTOMER who placed the order was referred by
+    // another customer (see order.service.ts createOrder() / Order.model.ts
+    // field comments). The two can both apply to the same order and simply
+    // stack — the worker only ever sees one final net number either way.
+    const customerBonusAmount = order.customerReferralBonusAmount ?? 0;
     // Locked in at resubmission time (see order.service.ts
     // resubmitCredentials()) — the worker's first password submission was
     // wrong on this order, so a penalty applies regardless of which path
@@ -114,9 +122,9 @@ export const walletService = {
     // they already got a separate, explicit notification about the
     // penalty amount when they resubmitted.
     const penaltyAmount = order.wrongPasswordPenaltyAmount ?? 0;
-    const netAmount   = Math.round((grossAmount - taxAmount - penaltyAmount) * 100) / 100;
+    const netAmount   = Math.round((grossAmount - taxAmount - customerBonusAmount - penaltyAmount) * 100) / 100;
 
-    // Deliberately never mention the referral deduction anywhere the
+    // Deliberately never mention either referral deduction anywhere the
     // worker themselves can see it — description stays identical whether
     // or not a cut applied. The amount is simply already net.
     await walletService.releaseFromPendingWithDeduction(
@@ -132,6 +140,20 @@ export const walletService = {
         userId:  order.referrerId,
         title:   `💸 Referral Bonus — ₹${taxAmount}`,
         message: `A worker you referred completed an order. ₹${taxAmount} has been credited to your wallet.`,
+        type:    'wallet',
+        orderId: order._id,
+      });
+    }
+
+    if (customerBonusAmount > 0 && order.customerReferrerId) {
+      await walletService.creditReferralBonus(
+        order.customerReferrerId, customerBonusAmount, order._id,
+        `Referral bonus — ${baseDescription}`
+      );
+      await notificationService.create({
+        userId:  order.customerReferrerId,
+        title:   `💸 Referral Bonus — ₹${customerBonusAmount}`,
+        message: `A customer you referred completed an order. ₹${customerBonusAmount} has been credited to your Mailzeon wallet — use it on your next order.`,
         type:    'wallet',
         orderId: order._id,
       });
