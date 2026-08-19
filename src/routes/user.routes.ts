@@ -137,31 +137,34 @@ router.post('/mark-installed', async (req: Request, res: Response) => {
   sendSuccess(res, 'Noted.');
 });
 
-// ── Referral program (workers only) ─────────────────────────────────────
+// ── Referral program (workers AND customers — two independent programs) ──
 // See auth.service.ts register() for how a referral gets recorded, and
-// wallet.service.ts settleOrderEarnings() for how the referral tax is
-// actually paid out on each of the referred worker's completed orders.
-router.get('/me/referral', requireRole('worker'), async (req: Request, res: Response) => {
+// wallet.service.ts settleOrderEarnings() for how each side's bonus is
+// actually paid out on completed orders.
+router.get('/me/referral', requireRole('worker', 'customer'), async (req: Request, res: Response) => {
+  const myRole = req.user!.role;
   let me = await User.findById(req.user!._id).select('referralCode');
 
-  // Backfill for workers who registered before this feature existed — they
-  // never got a referralCode assigned at signup, so generate one the first
-  // time they open this page instead of leaving it blank forever.
+  // Backfill for accounts that registered before this feature existed (or,
+  // for customers, before the program existed for their role at all) —
+  // they never got a referralCode assigned at signup, so generate one the
+  // first time they open this page instead of leaving it blank forever.
   if (!me?.referralCode) {
     const code = await generateUniqueReferralCode();
     me = await User.findByIdAndUpdate(req.user!._id, { referralCode: code }, { new: true }).select('referralCode');
   }
 
-  const referred = await User.find({ referredBy: req.user!._id })
+  const referred = await User.find({ referredBy: req.user!._id, role: myRole })
     .select('name createdAt')
     .sort({ createdAt: -1 })
     .lean();
 
   const referredIds = referred.map(r => r._id);
+  const matchField = myRole === 'worker' ? 'workerId' : 'customerId';
   const completedCounts = referredIds.length > 0
     ? await Order.aggregate([
-        { $match: { workerId: { $in: referredIds }, status: 'completed' } },
-        { $group: { _id: '$workerId', count: { $sum: 1 } } },
+        { $match: { [matchField]: { $in: referredIds }, status: 'completed' } },
+        { $group: { _id: `$${matchField}`, count: { $sum: 1 } } },
       ])
     : [];
   const completedMap = new Map(completedCounts.map((c: any) => [c._id.toString(), c.count]));
