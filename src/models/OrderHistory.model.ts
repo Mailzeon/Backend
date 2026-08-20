@@ -10,6 +10,8 @@ import mongoose, { Schema, Document, Types } from 'mongoose';
 // alone can never reconstruct once a value has been overwritten.
 export type OrderHistoryEvent =
   | 'created'
+  | 'payment_confirmed'
+  | 'payment_failed'
   | 'accepted'
   | 'accept_blocked_email_taken'
   | 'expired_returned'
