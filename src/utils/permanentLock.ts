@@ -32,36 +32,44 @@ interface LockLike {
 /**
  * Decides which (if any) of an IP-based lock and a device-based lock
  * should actually be inherited by the account currently registering/
- * logging in — see auth.service.ts register()/login().
+ * logging in — see auth.service.ts register() AND login().
  *
- * IP alone is NOT trustworthy evidence for a merely-temporary strike lock:
- * carrier-grade NAT (very common on Indian mobile networks — Jio, Airtel)
- * means many completely unrelated real people can share the exact same
- * public IP at the same time. Blocking/locking a stranger's account just
- * because a totally different worker on the same mobile network got a
- * strike is a real false-positive risk, not a hypothetical one — this
- * showed up in testing: an unrelated worker got a fresh 6h lock the
- * moment a different worker on a shared network took a strike.
+ * BUG FIX (Aug 2026): this used to trust a PERMANENT lock on EITHER
+ * signal alone (IP or device), while requiring BOTH signals for a merely
+ * TEMPORARY strike lock. That asymmetry turned out to be wrong in
+ * practice, in two separate real incidents:
+ *   1. Someone who had NEVER opened Mailzeon before tried to register as
+ *      a worker and was permanently blocked outright — their mobile
+ *      network's IP happened to be shared (CGNAT) with a completely
+ *      unrelated worker who'd been permanently banned for confirmed
+ *      theft. IP-only match, wrong person blocked.
+ *   2. The exact same class of bug can hit an EXISTING worker at LOGIN
+ *      too — logging in successfully, but silently having a permanent
+ *      lock inherited onto their own account (via useLockStatus.ts's
+ *      "permanently banned" banner) for the same reason: sharing a
+ *      CGNAT IP with a stranger who actually did something wrong.
  *
- * So the rule is asymmetric on purpose:
- *   - PERMANENT bans (confirmed theft, admin manual suspend) are a much
- *     stronger signal — a single match on EITHER IP or device is enough to
- *     block/inherit, same as before. These are rare, deliberate outcomes,
- *     worth being aggressive about.
- *   - TEMPORARY strike locks are weaker signals individually — only
- *     inherited if BOTH the IP and the device fingerprint match. IP-only
- *     coincidence (CGNAT) or device-only coincidence (fingerprint
- *     collision, rare but possible) alone isn't enough on its own.
+ * Carrier-grade NAT is extremely common on Indian mobile networks (Jio,
+ * Airtel) — many completely unrelated real people share the exact same
+ * public IP at the same time, constantly. IP alone was never reliable
+ * enough evidence for the TEMPORARY case (already handled correctly
+ * below), and this is direct proof it isn't reliable enough for the
+ * PERMANENT case either — a permanent ban being a "rare, deliberate
+ * outcome" doesn't make IP-sharing with that person any less coincidental
+ * for the innocent person on the other end of it.
+ *
+ * So the rule is now simple and consistent, for every lock and every
+ * caller: BOTH the IP and the device fingerprint must match before a
+ * lock is ever inherited onto a different account, whether that's a
+ * brand-new registration or an existing login. A worker who's genuinely
+ * evading their own ban (same actual device, same actual network) still
+ * gets caught by this — it's specifically the "different device,
+ * coincidentally same shared IP" case that no longer triggers.
  */
 export function resolveEvasionLock(
   ipLock: LockLike | null,
   deviceLock: LockLike | null
 ): LockLike | null {
-  const permanent = [ipLock, deviceLock].find(l => l && isPermanentLock(l.lockedUntil));
-  if (permanent) return permanent;
-
-  if (ipLock && deviceLock) {
-    return ipLock.lockedUntil.getTime() >= deviceLock.lockedUntil.getTime() ? ipLock : deviceLock;
-  }
-  return null; // only one signal matched, on a merely-temporary lock — not enough alone
+  if (!ipLock || !deviceLock) return null; // one signal alone is never enough, on any lock
+  return ipLock.lockedUntil.getTime() >= deviceLock.lockedUntil.getTime() ? ipLock : deviceLock;
 }
