@@ -185,14 +185,20 @@ const UserSchema = new Schema<IUser>(
       checkedAt: { type: Date },
     },
 
-    // ── Referral program (workers only, for now) ────────────────────────────
-    // See auth.service.ts register() for how these get set, and
-    // order.service.ts acceptOrder()/wallet.service.ts settleOrderEarnings()
-    // for how the referral tax actually gets paid out on completed orders.
+    // ── Referral program (every role can have one — see auth.service.ts
+    //    register() for how these get set). Two independent programs share
+    //    this same pair of fields: workers referring workers (a % of the
+    //    referred worker's own earning goes to the referrer — see
+    //    order.service.ts acceptOrder()/wallet.service.ts
+    //    settleOrderEarnings()), and customers referring customers (a %
+    //    deducted from the fulfilling worker's earning on the referred
+    //    customer's orders — see order.service.ts createOrder()). Admins
+    //    never get one; nothing in the app ever generates a code for that
+    //    role. ─────────────────────────────────────────────────────────
     referralCode: {
       type: String,
       unique: true,
-      sparse: true, // only workers get one; customers/admins leave this unset
+      sparse: true,
     },
     referredBy: {
       type: Schema.Types.ObjectId,
