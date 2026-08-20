@@ -12,6 +12,7 @@ import { checkEmailExists } from '../utils/emailVerification';
 import { describeDevice } from '../utils/deviceDescription';
 import { signToken } from '../utils/jwt';
 import { sendPasswordResetEmail } from '../utils/email';
+import { verifyTelegramInitData } from '../utils/telegramAuth';
 import { IUser, UserRole } from '../types';
 
 // Reset link is valid for 30 minutes — short enough to limit the window for
@@ -111,16 +112,15 @@ export const authService = {
       );
     }
 
-    // Anti-evasion: block a brand-new WORKER registration if the IP and/or
-    // device fingerprint currently has a dispute-strike lock in effect
-    // (see user.service.ts applyStrike() / LockedIp.model.ts /
+    // Anti-evasion: block a brand-new WORKER registration if the IP AND
+    // device fingerprint BOTH currently have a dispute-strike/ban lock in
+    // effect (see user.service.ts applyStrike() / LockedIp.model.ts /
     // LockedDevice.model.ts). See resolveEvasionLock() in permanentLock.ts
-    // for exactly how IP and device are weighed against each other —
-    // short version: a PERMANENT ban blocks on either signal alone, but a
-    // TEMPORARY strike lock needs BOTH to agree, since IP alone is easy to
-    // coincidentally share on Indian mobile networks (CGNAT) and isn't
-    // strong enough evidence by itself. Customers aren't restricted — this
-    // penalty system only exists for worker misconduct.
+    // for the full reasoning — both signals are always required now, for
+    // every kind of lock, after a real false positive proved IP-alone
+    // isn't trustworthy even for permanent bans on CGNAT-heavy Indian
+    // mobile networks. Customers aren't restricted — this penalty system
+    // only exists for worker misconduct.
     if (role === 'worker' && (ip || deviceId)) {
       const [ipLock, deviceLock] = await Promise.all([
         ip ? LockedIp.findOne({ ip, lockedUntil: { $gt: new Date() } }) : null,
@@ -213,6 +213,115 @@ export const authService = {
     return { user: user.toJSON(), token };
   },
 
+  // ── Telegram Mini App login ─────────────────────────────────────────
+  // See utils/telegramAuth.ts for the actual signature verification — by
+  // the time initData reaches here it's already confirmed to genuinely
+  // have come from Telegram.
+  //
+  // Two-step by design (this + telegramLogin below), mirroring how the
+  // normal register() flow also picks a role BEFORE the account exists:
+  // Telegram gives us a name/username/photo but has no concept of
+  // "worker" vs "customer" — so a brand-new Telegram user must be asked
+  // to choose, and that choice is passed into telegramLogin() rather
+  // than defaulted or guessed. Role is never changeable after this, same
+  // as a normal registration — the frontend should check this endpoint
+  // BEFORE showing a role picker, since an EXISTING Telegram user should
+  // never be asked to choose again.
+  async checkTelegramUser(initData: string): Promise<{ exists: boolean }> {
+    const { user: tgUser } = verifyTelegramInitData(initData);
+    const existing = await User.findOne({ telegramId: String(tgUser.id) }).select('_id');
+    return { exists: !!existing };
+  },
+
+  async telegramLogin(
+    initData: string,
+    role: 'customer' | 'worker' | undefined,
+    referralCode: string | undefined,
+    ip?: string,
+    deviceId?: string,
+    userAgent?: string
+  ): Promise<AuthResult> {
+    const { user: tgUser } = verifyTelegramInitData(initData);
+    const telegramId = String(tgUser.id);
+
+    let user = await User.findOne({ telegramId });
+
+    if (!user) {
+      // Brand-new Telegram login — this is effectively a registration, so
+      // it needs a role, same as the normal signup form requires.
+      if (!role) throwHttpError('Please choose whether you\'re signing up as a worker or a customer.', 400);
+
+      // Telegram never gives us an email or phone — a random, never-shown
+      // placeholder email keeps the schema's `required + unique` email
+      // field satisfied without colliding with anyone else; a
+      // cryptographically random password fills the required password
+      // field the same way (this account is only ever accessed via
+      // Telegram, so nobody ever needs to know or type it). Both phone
+      // AND email verification remain exactly as strict as normal — this
+      // account starts completely unverified on both and hits the SAME
+      // existing hard gates (order creation/acceptance, etc.) until the
+      // person fills them in from their profile page, same as any other
+      // account.
+      const placeholderEmail = `tg_${telegramId}@telegram.mailzeon.internal`;
+      const randomPassword   = crypto.randomBytes(24).toString('hex');
+      const displayName = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ').trim() || 'Telegram User';
+
+      let referredBy: Types.ObjectId | undefined;
+      if (referralCode?.trim()) {
+        const referrer = await User.findOne({
+          referralCode: referralCode.trim().toUpperCase(),
+          role,
+        }).select('_id registrationIp lastLoginIp registrationDevice lastLoginDevice');
+        if (referrer) {
+          const sameIp = !!ip && (referrer.registrationIp === ip || referrer.lastLoginIp === ip);
+          const sameDevice = !!deviceId && (referrer.registrationDevice === deviceId || referrer.lastLoginDevice === deviceId);
+          if (!sameIp && !sameDevice) referredBy = referrer._id;
+        }
+      }
+
+      user = await User.create({
+        name: displayName,
+        email: placeholderEmail,
+        password: randomPassword,
+        role,
+        phone: '',
+        phoneVerified: false,
+        telegramId,
+        telegramUsername: tgUser.username,
+        registrationIp: ip, lastLoginIp: ip,
+        registrationDevice: deviceId, lastLoginDevice: deviceId,
+        registrationDeviceLabel: describeDevice(userAgent), lastLoginDeviceLabel: describeDevice(userAgent),
+        referralCode: await generateUniqueReferralCode(),
+        referredBy,
+      });
+
+      if (role === 'worker') {
+        await Promise.all([
+          Wallet.create({ userId: user._id }),
+          WorkerLevelModel.create({ workerId: user._id }),
+        ]);
+        if (ip) {
+          checkIpRisk(ip)
+            .then(result => User.findByIdAndUpdate(user!._id, { ipRiskFlag: result }))
+            .catch(err => console.error('[Auth] Background IP risk check failed:', err));
+        }
+      }
+    } else {
+      // Returning Telegram user — just refresh their last-login footprint,
+      // same fields a normal password login updates.
+      if (ip) user.lastLoginIp = ip;
+      if (deviceId) user.lastLoginDevice = deviceId;
+      if (userAgent) user.lastLoginDeviceLabel = describeDevice(userAgent);
+      if (tgUser.username) user.telegramUsername = tgUser.username;
+      await user.save();
+
+      if (user.isDeleted) throwHttpError('This account has been deleted.', 403);
+    }
+
+    const token = signToken(user._id, user.role as UserRole);
+    return { user: user.toJSON(), token };
+  },
+
   async login(email: string, password: string, ip?: string, deviceId?: string, userAgent?: string): Promise<AuthResult> {
     // +password because select: false in schema
     const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
@@ -226,15 +335,16 @@ export const authService = {
       if (deviceId) user!.lastLoginDevice = deviceId;
       if (userAgent) user!.lastLoginDeviceLabel = describeDevice(userAgent);
 
-      // Anti-evasion, part 2: if this IP and/or device has an active lock
-      // (from a DIFFERENT, previously-struck account), inherit it onto
-      // whichever account is logging in right now — closes the loophole
-      // of dodging a strike by switching to an already-existing second
-      // account instead of registering a brand new one. See
-      // resolveEvasionLock() in permanentLock.ts for why a temporary
-      // strike lock needs BOTH IP and device to match (IP alone is too
-      // easy to coincidentally share on Indian mobile networks/CGNAT),
-      // while a permanent ban inherits on either signal alone.
+      // Anti-evasion, part 2: if this IP AND device both have an active
+      // lock (from a DIFFERENT, previously-struck account), inherit it
+      // onto whichever account is logging in right now — closes the
+      // loophole of dodging a strike by switching to an already-existing
+      // second account instead of registering a brand new one. See
+      // resolveEvasionLock() in permanentLock.ts — both signals are
+      // always required now, for every kind of lock (temporary or
+      // permanent), after a real false positive proved IP alone isn't
+      // trustworthy evidence even for a permanent ban on CGNAT-heavy
+      // Indian mobile networks.
       if (user!.role === 'worker') {
         const [ipLock, deviceLock] = await Promise.all([
           ip ? LockedIp.findOne({ ip, lockedUntil: { $gt: new Date() } }) : null,
