@@ -5,6 +5,7 @@ import { Order } from '../models/Order.model';
 import { Transaction } from '../models/Transaction.model';
 import { notificationService } from './notification.service';
 import { walletService } from './wallet.service';
+import { orderHistoryService } from './orderHistory.service';
 import { emitToMarketplace, EVENTS } from '../socket/events';
 import { sendPushToAllWorkers } from '../utils/webPush';
 
@@ -232,6 +233,14 @@ export const paymentService = {
 
     if (!order) return; // Already processed or not in the expected state — no-op
 
+    const orderRef = order._id.toString().slice(-6).toUpperCase();
+    await orderHistoryService.log(order._id.toString(), 'payment_confirmed', {
+      actorRole: 'system',
+      message: order.walletAmountApplied > 0
+        ? `Payment confirmed — ₹${order.walletAmountApplied} wallet credit + ₹${Math.round((order.amount - order.walletAmountApplied) * 100) / 100} via Cashfree. Order #${orderRef} is now live in the marketplace.`
+        : `Payment confirmed via Cashfree — ₹${order.amount}. Order #${orderRef} is now live in the marketplace.`,
+    });
+
     // Order is now marketplace-visible — broadcast to online workers
     emitToMarketplace(EVENTS.NEW_ORDER, {
       _id:            order._id,
@@ -281,6 +290,13 @@ export const paymentService = {
     );
 
     if (!order) return; // Already processed — no-op
+
+    const orderRef = order._id.toString().slice(-6).toUpperCase();
+    await orderHistoryService.log(order._id.toString(), 'payment_failed', {
+      actorRole: 'system',
+      message: `Payment failed or checkout abandoned for Order #${orderRef}.` +
+        (order.walletAmountApplied > 0 ? ` ₹${order.walletAmountApplied} wallet portion refunded.` : ''),
+    });
 
     // NEW: if part of this order's payment was covered by wallet credit
     // (see order.service.ts createOrder — partial wallet + Cashfree split),
