@@ -99,6 +99,30 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', environment: env.NODE_ENV, timestamp: new Date().toISOString() });
 });
 
+// ── IP debug — for verifying 'trust proxy' is set to the CORRECT hop count ────
+// Shows ONLY the current requester's own connection info, nothing about
+// any other user — safe to leave public permanently, same as any
+// "what's my IP" endpoint. Exists because getting the hop count wrong in
+// EITHER direction silently breaks real things: too low and req.ip
+// resolves to a shared Render-internal proxy address (making every rate
+// limit / IP-based lock effectively apply to ALL users at once, exactly
+// the kind of false-positive this app has already hit); too high and a
+// client can forge X-Forwarded-For to spoof any IP they want, defeating
+// the whole anti-fraud IP layer. Compare 'req.ip' below against your own
+// real public IP (e.g. https://api.ipify.org) — if they don't match,
+// adjust app.set('trust proxy', N) above until they do. See the count of
+// entries in 'x-forwarded-for' for a second sanity check: with the
+// correct hop count, 'req.ip' should equal the FIRST (leftmost) entry.
+app.get('/api/_debug/ip', (req, res) => {
+  res.json({
+    success: true,
+    'req.ip': req.ip,
+    'req.ips': req.ips,
+    'x-forwarded-for (raw header)': req.headers['x-forwarded-for'] ?? null,
+    'current trust proxy setting': app.get('trust proxy'),
+  });
+});
+
 // ── API routes ────────────────────────────────────────────────────────────────
 app.use('/api/auth',          authRoutes);
 app.use('/api/orders',        orderRoutes);
