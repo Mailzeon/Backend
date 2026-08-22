@@ -89,3 +89,23 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
   await authService.resetPassword(token, newPassword);
   sendSuccess(res, 'Password reset successfully. You can now log in.');
 };
+
+// ── Telegram Mini App ──────────────────────────────────────────────────────
+// See services/auth.service.ts checkTelegramUser()/telegramLogin() and
+// utils/telegramAuth.ts for the actual verification. Same "token also in
+// the body" pattern as register()/login() above, for the same reason —
+// see the comment there.
+export const telegramCheckUser = async (req: Request, res: Response): Promise<void> => {
+  const { initData } = req.body;
+  const result = await authService.checkTelegramUser(initData);
+  sendSuccess(res, 'Telegram user checked.', result);
+};
+
+export const telegramLogin = async (req: Request, res: Response): Promise<void> => {
+  const { initData, role, referralCode } = req.body;
+  const { user, token } = await authService.telegramLogin(
+    initData, role, referralCode, req.ip, req.body.deviceId, req.headers['user-agent']
+  );
+  setAuthCookie(res, token);
+  sendSuccess(res, 'Logged in via Telegram.', { user, token });
+};
