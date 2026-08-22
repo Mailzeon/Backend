@@ -121,6 +121,15 @@ export const env = {
   // compatibility, prefer the plural one for anything new.
   ABSTRACT_PHONE_API_KEYS: optional('ABSTRACT_PHONE_API_KEYS'),
   ABSTRACT_PHONE_API_KEY: optional('ABSTRACT_PHONE_API_KEY'),
+
+  // ── Telegram Mini App login ────────────────────────────────────────────
+  // Optional — leave unset and Telegram login endpoints simply fail closed
+  // with a clear error (see utils/telegramAuth.ts); everything else on the
+  // site keeps working exactly as before. This is the bot token from
+  // @BotFather, used ONLY to verify that a login attempt's initData
+  // genuinely came from Telegram (HMAC signature check) — never sent
+  // anywhere else, never exposed to the frontend.
+  TELEGRAM_BOT_TOKEN: optional('TELEGRAM_BOT_TOKEN'),
 } as const;
 
 // The single "main" domain to use for building links (payment redirects,
