@@ -62,3 +62,18 @@ export const resetPasswordSchema = z.object({
     .min(6, 'New password must be at least 6 characters')
     .max(100, 'Password is too long'),
 });
+
+// ── Telegram Mini App ──────────────────────────────────────────────────────
+// initData is Telegram's raw signed payload (see utils/telegramAuth.ts for
+// verification) — role/referralCode only matter for a brand-new Telegram
+// user, exactly mirroring registerSchema above; ignored entirely for a
+// returning one (see auth.service.ts telegramLogin()).
+export const telegramCheckSchema = z.object({
+  initData: z.string().min(1, 'Missing Telegram init data'),
+});
+
+export const telegramLoginSchema = z.object({
+  initData: z.string().min(1, 'Missing Telegram init data'),
+  role: z.enum(['customer', 'worker']).optional(),
+  referralCode: z.string().trim().max(20).optional(),
+});
