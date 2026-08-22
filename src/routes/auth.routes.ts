@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   register, login, logout, getMe, changePassword, forgotPassword, resetPassword,
+  telegramCheckUser, telegramLogin,
 } from '../controllers/auth.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authLimiter } from '../middleware/rateLimiter.middleware';
@@ -8,6 +9,7 @@ import { validate } from '../middleware/validate.middleware';
 import {
   registerSchema, loginSchema, changePasswordSchema,
   forgotPasswordSchema, resetPasswordSchema,
+  telegramCheckSchema, telegramLoginSchema,
 } from '../validators/auth.validator';
 
 const router = Router();
@@ -27,5 +29,12 @@ router.put('/change-password', authenticate, validate(changePasswordSchema), cha
 // endpoints that could otherwise be abused (email-bombing / token brute-force).
 router.post('/forgot-password', authLimiter, validate(forgotPasswordSchema), forgotPassword);
 router.post('/reset-password',  authLimiter, validate(resetPasswordSchema),  resetPassword);
+
+// Telegram Mini App — rate-limited same as register/login, since both are
+// unauthenticated entry points. /telegram/check is called first by the
+// frontend to decide whether to show a role picker (brand-new user) or
+// skip straight to login (returning user) — see app/telegram/page.tsx.
+router.post('/telegram/check', authLimiter, validate(telegramCheckSchema), telegramCheckUser);
+router.post('/telegram',       authLimiter, validate(telegramLoginSchema), telegramLogin);
 
 export default router;
