@@ -59,6 +59,8 @@ export interface IUser extends Document {
   };
   referralCode?: string;
   referredBy?: Types.ObjectId | string;
+  telegramId?: string;
+  telegramUsername?: string;
   upiId?: string;
   bankDetails?: {
     accountHolder: string;
