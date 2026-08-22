@@ -206,6 +206,21 @@ const UserSchema = new Schema<IUser>(
       // Permanent once set at registration — never changes afterward.
     },
 
+    // ── Telegram Mini App login (see utils/telegramAuth.ts /
+    // auth.service.ts telegramLogin()). Set the first time someone logs in
+    // via Telegram — a normal email/password account never has these.
+    // sparse + unique so a given Telegram account can only ever be linked
+    // to one Mailzeon account, but plenty of accounts (anyone who never
+    // used Telegram) simply have neither field set at all.
+    telegramId: {
+      type: String,
+      unique: true,
+      sparse: true,
+    },
+    telegramUsername: {
+      type: String,
+    },
+
     // ── Payment details (worker withdrawals) ───────────────────────────────
     upiId: { type: String, trim: true },
     bankDetails: {
