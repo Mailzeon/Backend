@@ -12,6 +12,7 @@ import { checkEmailExists } from '../utils/emailVerification';
 import { describeDevice } from '../utils/deviceDescription';
 import { signToken } from '../utils/jwt';
 import { sendPasswordResetEmail } from '../utils/email';
+import { verifyTelegramInitData } from '../utils/telegramAuth';
 import { IUser, UserRole } from '../types';
 
 // Reset link is valid for 30 minutes — short enough to limit the window for
@@ -250,6 +251,148 @@ export const authService = {
 
     const token = signToken(user!._id, user!.role as UserRole);
     return { user: user!.toJSON(), token };
+  },
+
+  // ── Telegram Mini App login ─────────────────────────────────────────
+  // See utils/telegramAuth.ts for the actual signature verification — by
+  // the time initData reaches here it's already confirmed to genuinely
+  // have come from Telegram.
+  //
+  // Two-step by design (this + telegramLogin below), mirroring how the
+  // normal register() flow also picks a role BEFORE the account exists:
+  // Telegram gives us a name/username/photo but has no concept of
+  // "worker" vs "customer" — so a brand-new Telegram user must be asked
+  // to choose, and that choice is passed into telegramLogin() rather
+  // than defaulted or guessed. Role is never changeable after this, same
+  // as a normal registration — the frontend should check this endpoint
+  // BEFORE showing a role picker, since an EXISTING Telegram user should
+  // never be asked to choose again.
+  async checkTelegramUser(initData: string): Promise<{ exists: boolean }> {
+    const { user: tgUser } = verifyTelegramInitData(initData);
+    const existing = await User.findOne({ telegramId: String(tgUser.id) }).select('_id');
+    return { exists: !!existing };
+  },
+
+  async telegramLogin(
+    initData: string,
+    role: 'customer' | 'worker' | undefined,
+    referralCode: string | undefined,
+    ip?: string,
+    deviceId?: string,
+    userAgent?: string
+  ): Promise<AuthResult> {
+    const { user: tgUser } = verifyTelegramInitData(initData);
+    const telegramId = String(tgUser.id);
+
+    let user = await User.findOne({ telegramId });
+
+    if (!user) {
+      // Brand-new Telegram login — this is effectively a registration, so
+      // it needs a role, same as the normal signup form requires.
+      if (!role) throwHttpError('Please choose whether you\'re signing up as a worker or a customer.', 400);
+
+      // Telegram never gives us an email or phone — a random, never-shown
+      // placeholder email keeps the schema's `required + unique` email
+      // field satisfied without colliding with anyone else; a
+      // cryptographically random password fills the required password
+      // field the same way (this account is only ever accessed via
+      // Telegram, so nobody ever needs to know or type it). Both phone
+      // AND email verification remain exactly as strict as normal — this
+      // account starts completely unverified on both and hits the SAME
+      // existing hard gates (order creation/acceptance, etc.) until the
+      // person fills them in from their profile page, same as any other
+      // account.
+      const placeholderEmail = `tg_${telegramId}@telegram.mailzeon.internal`;
+      const randomPassword   = crypto.randomBytes(24).toString('hex');
+      const displayName = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ').trim() || 'Telegram User';
+
+      // Same anti-evasion registration check as the normal signup flow
+      // (see register() above) — a brand-new Telegram worker account is
+      // just as capable of being used to dodge a ban as a brand-new
+      // email/password one, so it goes through the identical gate.
+      if (role === 'worker' && (ip || deviceId)) {
+        const [ipLock, deviceLock] = await Promise.all([
+          ip ? LockedIp.findOne({ ip, lockedUntil: { $gt: new Date() } }) : null,
+          deviceId ? LockedDevice.findOne({ deviceId, lockedUntil: { $gt: new Date() } }) : null,
+        ]);
+        const lock = resolveEvasionLock(ipLock, deviceLock);
+        if (lock) {
+          if (isPermanentLock(lock.lockedUntil)) {
+            throwHttpError('Registration is permanently blocked due to a confirmed policy violation.', 403);
+          }
+          throwHttpError(
+            `Registration is temporarily blocked due to a recent policy violation. Try again after ${lock.lockedUntil.toLocaleString()}.`,
+            403
+          );
+        }
+      }
+
+      let referredBy: Types.ObjectId | undefined;
+      if (referralCode?.trim()) {
+        const referrer = await User.findOne({
+          referralCode: referralCode.trim().toUpperCase(),
+          role,
+        }).select('_id registrationIp lastLoginIp registrationDevice lastLoginDevice');
+        if (referrer) {
+          const sameIp = !!ip && (referrer.registrationIp === ip || referrer.lastLoginIp === ip);
+          const sameDevice = !!deviceId && (referrer.registrationDevice === deviceId || referrer.lastLoginDevice === deviceId);
+          if (!sameIp && !sameDevice) referredBy = referrer._id;
+        }
+      }
+
+      user = await User.create({
+        name: displayName,
+        email: placeholderEmail,
+        password: randomPassword,
+        role,
+        phone: '',
+        phoneVerified: false,
+        telegramId,
+        telegramUsername: tgUser.username,
+        registrationIp: ip, lastLoginIp: ip,
+        registrationDevice: deviceId, lastLoginDevice: deviceId,
+        registrationDeviceLabel: describeDevice(userAgent), lastLoginDeviceLabel: describeDevice(userAgent),
+        referralCode: await generateUniqueReferralCode(),
+        referredBy,
+      });
+
+      if (role === 'worker') {
+        await Promise.all([
+          Wallet.create({ userId: user._id }),
+          WorkerLevelModel.create({ workerId: user._id }),
+        ]);
+        if (ip) {
+          checkIpRisk(ip)
+            .then(result => User.findByIdAndUpdate(user!._id, { ipRiskFlag: result }))
+            .catch(err => console.error('[Auth] Background IP risk check failed:', err));
+        }
+      }
+    } else {
+      // Returning Telegram user — same anti-evasion lock inheritance as a
+      // normal password login (see login() above), just triggered from a
+      // different entry point.
+      if (user.isDeleted) throwHttpError('This account has been deleted.', 403);
+
+      if (ip) user.lastLoginIp = ip;
+      if (deviceId) user.lastLoginDevice = deviceId;
+      if (userAgent) user.lastLoginDeviceLabel = describeDevice(userAgent);
+      if (tgUser.username) user.telegramUsername = tgUser.username;
+
+      if ((ip || deviceId) && user.role === 'worker') {
+        const [ipLock, deviceLock] = await Promise.all([
+          ip ? LockedIp.findOne({ ip, lockedUntil: { $gt: new Date() } }) : null,
+          deviceId ? LockedDevice.findOne({ deviceId, lockedUntil: { $gt: new Date() } }) : null,
+        ]);
+        const lock = resolveEvasionLock(ipLock, deviceLock);
+        if (lock && (!user.lockedUntil || user.lockedUntil < lock.lockedUntil)) {
+          user.lockedUntil = lock.lockedUntil;
+        }
+      }
+      await user.save();
+    }
+
+    const token = signToken(user._id, user.role as UserRole);
+    return { user: user.toJSON(), token };
   },
 
   async getMe(userId: string): Promise<IUser> {
