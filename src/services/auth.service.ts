@@ -414,15 +414,6 @@ export const authService = {
     const { user: tgUser } = verifyTelegramInitData(initData);
     const telegramId = String(tgUser.id);
 
-    // This exact Telegram identity must not already be linked to a
-    // DIFFERENT account — prevents one Telegram account silently jumping
-    // between two Mailzeon accounts depending on which password someone
-    // happens to type.
-    const alreadyLinkedElsewhere = await User.findOne({ telegramId }).select('_id');
-    if (alreadyLinkedElsewhere) {
-      throwHttpError('This Telegram account is already linked to a different Mailzeon account.', 409);
-    }
-
     const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
     if (!user) throwHttpError('Invalid email or password.', 401);
 
@@ -431,12 +422,21 @@ export const authService = {
 
     if (user!.isDeleted) throwHttpError('This account has been deleted.', 403);
 
-    // The account being linked TO must not already have a different
-    // Telegram identity attached — avoids one password login silently
-    // re-pointing an existing link to a new Telegram account.
-    if (user!.telegramId && user!.telegramId !== telegramId) {
-      throwHttpError('This Mailzeon account is already linked to a different Telegram account. Contact support if you need this changed.', 409);
-    }
+    // BUG FIX (Aug 2026): this used to hard-block linking whenever EITHER
+    // side already had a different link (a throwaway test account
+    // claiming this Telegram identity first, or this account already
+    // having some other Telegram identity attached) — which in practice
+    // just left people stuck with no way to fix it themselves. Now both
+    // sides simply get REASSIGNED instead of blocked: the person has, in
+    // this exact request, already proven ownership of BOTH sides — this
+    // exact Telegram session (verified initData signature) AND the
+    // target account (its password) — so moving the link is safe and
+    // matches what they're clearly trying to do (e.g. switching off an
+    // old test account onto their real one).
+    await User.updateMany(
+      { telegramId, _id: { $ne: user!._id } },
+      { $unset: { telegramId: 1, telegramUsername: 1 } }
+    );
 
     user!.telegramId = telegramId;
     user!.telegramUsername = tgUser.username;
