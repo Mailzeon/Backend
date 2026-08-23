@@ -106,7 +106,17 @@ export const telegramLogin = async (req: Request, res: Response): Promise<void> 
   const { user, token } = await authService.telegramLogin(
     initData, role, referralCode, req.ip, req.body.deviceId, req.headers['user-agent']
   );
-  setAuthCookie(res, token);
+  // BUG FIX (Aug 2026): deliberately NOT calling setAuthCookie() here.
+  // Telegram's in-app WebView can share cookie storage with the phone's
+  // regular browser on some Android setups — if this set the SAME
+  // cross-domain session cookie the normal website login uses, logging in
+  // on one would silently overwrite the other's session, logging them out
+  // unexpectedly. Telegram logins run ENTIRELY on the Bearer-token/
+  // sessionStorage fallback instead (see lib/authToken.ts / lib/api.ts on
+  // the frontend, and auth.middleware.ts's header-fallback check on this
+  // side) — sessionStorage is isolated per browsing context regardless of
+  // any cookie-sharing quirk, so a Telegram session and a website session
+  // for the same account can never step on each other.
   sendSuccess(res, 'Logged in via Telegram.', { user, token });
 };
 
@@ -115,6 +125,6 @@ export const telegramLink = async (req: Request, res: Response): Promise<void> =
   const { user, token } = await authService.linkTelegramAccount(
     initData, email, password, req.ip, req.body.deviceId, req.headers['user-agent']
   );
-  setAuthCookie(res, token);
+  // Same reasoning as telegramLogin() above — no cookie, Bearer-token only.
   sendSuccess(res, 'Your Telegram account is now linked.', { user, token });
 };
