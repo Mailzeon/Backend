@@ -267,10 +267,10 @@ export const authService = {
   // as a normal registration — the frontend should check this endpoint
   // BEFORE showing a role picker, since an EXISTING Telegram user should
   // never be asked to choose again.
-  async checkTelegramUser(initData: string): Promise<{ exists: boolean }> {
+  async checkTelegramUser(initData: string): Promise<{ exists: boolean; name?: string }> {
     const { user: tgUser } = verifyTelegramInitData(initData);
-    const existing = await User.findOne({ telegramId: String(tgUser.id) }).select('_id');
-    return { exists: !!existing };
+    const existing = await User.findOne({ telegramId: String(tgUser.id) }).select('name');
+    return { exists: !!existing, name: existing?.name };
   },
 
   async telegramLogin(
@@ -395,6 +395,60 @@ export const authService = {
     return { user: user.toJSON(), token };
   },
 
+  // ── Link an EXISTING Mailzeon account to this Telegram identity ────────
+  // Covers the person who already has a real website account (real email
+  // + password) and wants to use the SAME account through the Telegram
+  // Mini App, instead of ending up with a second, separate Telegram-only
+  // account. Verified by password (proves ownership), same as a normal
+  // login — after this succeeds, opening the Mini App from this exact
+  // Telegram account auto-logs into THIS account going forward, same as
+  // any other returning Telegram user.
+  async linkTelegramAccount(
+    initData: string,
+    email: string,
+    password: string,
+    ip?: string,
+    deviceId?: string,
+    userAgent?: string
+  ): Promise<AuthResult> {
+    const { user: tgUser } = verifyTelegramInitData(initData);
+    const telegramId = String(tgUser.id);
+
+    // This exact Telegram identity must not already be linked to a
+    // DIFFERENT account — prevents one Telegram account silently jumping
+    // between two Mailzeon accounts depending on which password someone
+    // happens to type.
+    const alreadyLinkedElsewhere = await User.findOne({ telegramId }).select('_id');
+    if (alreadyLinkedElsewhere) {
+      throwHttpError('This Telegram account is already linked to a different Mailzeon account.', 409);
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+    if (!user) throwHttpError('Invalid email or password.', 401);
+
+    const valid = await user!.comparePassword(password);
+    if (!valid) throwHttpError('Invalid email or password.', 401);
+
+    if (user!.isDeleted) throwHttpError('This account has been deleted.', 403);
+
+    // The account being linked TO must not already have a different
+    // Telegram identity attached — avoids one password login silently
+    // re-pointing an existing link to a new Telegram account.
+    if (user!.telegramId && user!.telegramId !== telegramId) {
+      throwHttpError('This Mailzeon account is already linked to a different Telegram account. Contact support if you need this changed.', 409);
+    }
+
+    user!.telegramId = telegramId;
+    user!.telegramUsername = tgUser.username;
+    if (ip) user!.lastLoginIp = ip;
+    if (deviceId) user!.lastLoginDevice = deviceId;
+    if (userAgent) user!.lastLoginDeviceLabel = describeDevice(userAgent);
+    await user!.save();
+
+    const token = signToken(user!._id, user!.role as UserRole);
+    return { user: user!.toJSON(), token };
+  },
+
   async getMe(userId: string): Promise<IUser> {
     const user = await User.findById(userId);
     if (!user) throwHttpError('User not found.', 404);
@@ -422,6 +476,22 @@ export const authService = {
   async forgotPassword(email: string): Promise<void> {
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) return; // Silent no-op — don't leak whether the email exists
+
+    // Telegram-origin accounts get an internal placeholder email (see
+    // telegramLogin() above) — sending a reset link there would silently
+    // fail forever, since nothing real ever receives it. Someone typing
+    // this exact placeholder pattern already has to KNOW/have this
+    // specific string, which isn't guessable by coincidence, so revealing
+    // this explains-what's-actually-going-on message here doesn't leak
+    // anything the normal silent-no-op above is trying to protect.
+    if (/^tg_\d+@telegram\.mailzeon\.internal$/.test(user.email)) {
+      throwHttpError(
+        'This account was created via the Mailzeon Telegram bot and has no email set yet. ' +
+        'Reopen the bot in Telegram to log back in — no password needed. You can also set a ' +
+        'real email from your profile afterward.',
+        400
+      );
+    }
 
     const rawToken = crypto.randomBytes(32).toString('hex');
     const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
