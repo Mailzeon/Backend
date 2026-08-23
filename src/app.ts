@@ -21,6 +21,7 @@ import settingsRoutes     from './routes/settings.routes';
 import refundRoutes       from './routes/refund.routes';
 import leaderboardRoutes  from './routes/leaderboard.routes';
 import paymentRoutes      from './routes/payment.routes';
+import telegramWebhookRoutes from './routes/telegramWebhook.routes';
 
 export const app = express();
 
@@ -137,6 +138,7 @@ app.use('/api/settings',      settingsRoutes);
 app.use('/api/refunds',       refundRoutes);
 app.use('/api/leaderboard',   leaderboardRoutes);
 app.use('/api/payments',      paymentRoutes); // GET /verify/:orderId (normal JSON auth route)
+app.use('/api/telegram',      telegramWebhookRoutes); // POST /webhook — public, Telegram calls this directly
 
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => {
