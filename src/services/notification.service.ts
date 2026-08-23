@@ -3,8 +3,16 @@ import { User } from '../models/User.model';
 import { emitToUser, EVENTS } from '../socket/events';
 import { sendPushToUser } from '../utils/webPush';
 import { sendNotificationEmail } from '../utils/email';
+import { telegramBotService } from './telegramBot.service';
 import { NotificationType } from '../types';
 import { Types } from 'mongoose';
+
+// Telegram-origin accounts get an internal placeholder email (see
+// auth.service.ts telegramLogin()) — never worth spending an email send
+// (or Brevo's 300/day free-tier quota) on an address nothing real will
+// ever receive.
+const isPlaceholderTelegramEmail = (email: string): boolean =>
+  /^tg_\d+@telegram\.mailzeon\.internal$/.test(email);
 
 interface CreateNotifInput {
   userId:   Types.ObjectId | string;
@@ -32,17 +40,28 @@ export const notificationService = {
       orderId: input.orderId?.toString(),
     }).catch(err => console.error('[Notification] Push send failed:', err));
 
-    // NEW: mirror every notification to the user's registered email too.
-    // Fire-and-forget for the same reason as the push call above — an
-    // email failure (or Brevo's 300/day free-tier limit being hit) must
-    // never break the actual notification/DB write.
-    User.findById(input.userId).select('email').lean()
+    // NEW: mirror every notification to the user's registered email, AND
+    // to their Telegram chat if they have one linked — fire-and-forget for
+    // the same reason as the push call above.
+    //
+    // Telegram is the effective "push notification channel" for anyone who
+    // signed up (or logged in) via the Mini App: the standard browser Push
+    // API above does NOT work inside Telegram's WebView at all (it's a
+    // sandboxed context, no Service Worker support) — without this, a
+    // Telegram-origin user would get literally zero notifications
+    // whenever the Mini App itself isn't open, unlike web/PWA users.
+    User.findById(input.userId).select('email telegramId').lean()
       .then((user) => {
-        if (user?.email) {
-          return sendNotificationEmail(user.email, input.title, input.message);
+        if (user?.email && !isPlaceholderTelegramEmail(user.email)) {
+          sendNotificationEmail(user.email, input.title, input.message)
+            .catch(err => console.error('[Notification] Email send failed:', err));
+        }
+        if (user?.telegramId) {
+          telegramBotService.sendMessage(user.telegramId, `${input.title}\n\n${input.message}`)
+            .catch(err => console.error('[Notification] Telegram send failed:', err));
         }
       })
-      .catch(err => console.error('[Notification] Email send failed:', err));
+      .catch(err => console.error('[Notification] User lookup for email/telegram failed:', err));
 
     return notif;
   },
