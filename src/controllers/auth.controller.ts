@@ -109,3 +109,12 @@ export const telegramLogin = async (req: Request, res: Response): Promise<void> 
   setAuthCookie(res, token);
   sendSuccess(res, 'Logged in via Telegram.', { user, token });
 };
+
+export const telegramLink = async (req: Request, res: Response): Promise<void> => {
+  const { initData, email, password } = req.body;
+  const { user, token } = await authService.linkTelegramAccount(
+    initData, email, password, req.ip, req.body.deviceId, req.headers['user-agent']
+  );
+  setAuthCookie(res, token);
+  sendSuccess(res, 'Your Telegram account is now linked.', { user, token });
+};
