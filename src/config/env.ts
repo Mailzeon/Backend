@@ -130,6 +130,15 @@ export const env = {
   // genuinely came from Telegram (HMAC signature check) — never sent
   // anywhere else, never exposed to the frontend.
   TELEGRAM_BOT_TOKEN: optional('TELEGRAM_BOT_TOKEN'),
+
+  // Verifies incoming bot webhook POSTs genuinely came from Telegram, not
+  // a random request to this public endpoint — set once when registering
+  // the webhook (see routes/telegramWebhook.routes.ts for the one-time
+  // setup command), Telegram echoes it back on every call via the
+  // X-Telegram-Bot-Api-Secret-Token header. Optional — if unset, the
+  // webhook route just skips that check (fine for a quick first test,
+  // but set it before relying on this in production).
+  TELEGRAM_WEBHOOK_SECRET: optional('TELEGRAM_WEBHOOK_SECRET'),
 } as const;
 
 // The single "main" domain to use for building links (payment redirects,
