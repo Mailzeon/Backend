@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import {
   register, login, logout, getMe, changePassword, forgotPassword, resetPassword,
-  telegramCheckUser, telegramLogin,
+  telegramCheckUser, telegramLogin, telegramLink,
 } from '../controllers/auth.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authLimiter } from '../middleware/rateLimiter.middleware';
@@ -9,7 +9,7 @@ import { validate } from '../middleware/validate.middleware';
 import {
   registerSchema, loginSchema, changePasswordSchema,
   forgotPasswordSchema, resetPasswordSchema,
-  telegramCheckSchema, telegramLoginSchema,
+  telegramCheckSchema, telegramLoginSchema, telegramLinkSchema,
 } from '../validators/auth.validator';
 
 const router = Router();
@@ -36,5 +36,6 @@ router.post('/reset-password',  authLimiter, validate(resetPasswordSchema),  res
 // skip straight to login (returning user) — see app/telegram/page.tsx.
 router.post('/telegram/check', authLimiter, validate(telegramCheckSchema), telegramCheckUser);
 router.post('/telegram',       authLimiter, validate(telegramLoginSchema), telegramLogin);
+router.post('/telegram/link',  authLimiter, validate(telegramLinkSchema),  telegramLink);
 
 export default router;
