@@ -8,36 +8,35 @@ import { env, PRIMARY_FRONTEND_URL } from '../config/env';
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 
 export const telegramBotService = {
-  // Sends the "tap below to open the app" welcome message — the ONLY
-  // message this bot ever sends. There's no broader conversational bot
-  // here by design; this webhook exists purely to make /start feel
-  // complete, not to build out a full chatbot.
-  async sendWelcomeMessage(chatId: number): Promise<void> {
+  // Generic send — this IS now a real notification channel (see
+  // notification.service.ts create()), not just the one-off /start
+  // welcome message it started as. Telegram's Mini App WebView doesn't
+  // support the standard browser Push API/Service Workers at all (it's a
+  // sandboxed WebView, not a full installable PWA context) — so without
+  // this, a Telegram-origin user gets ZERO notifications whenever the
+  // Mini App itself isn't open, unlike web/PWA users who still get push
+  // notifications with the site closed. This bot message is the
+  // equivalent channel for them.
+  //
+  // Only ever reaches people who have opened the Mini App / sent /start
+  // at least once — Telegram simply won't deliver a bot message to anyone
+  // who hasn't started a conversation with the bot, so this can never be
+  // used to message an arbitrary stranger.
+  async sendMessage(chatId: number | string, text: string, includeOpenAppButton = true): Promise<void> {
     if (!env.TELEGRAM_BOT_TOKEN) {
-      console.error('[TelegramBot] Cannot send welcome message — TELEGRAM_BOT_TOKEN not configured.');
+      console.error('[TelegramBot] Cannot send message — TELEGRAM_BOT_TOKEN not configured.');
       return;
     }
 
     const url = `${TELEGRAM_API_BASE}/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-    const body = {
-      chat_id: chatId,
-      text:
-        '👋 Welcome to Mailzeon!\n\n' +
-        'Order email accounts, track your orders, or fulfill orders and earn — all from right here in Telegram.\n\n' +
-        'Tap the button below to get started.',
-      reply_markup: {
+    const body: Record<string, unknown> = { chat_id: chatId, text };
+    if (includeOpenAppButton) {
+      body.reply_markup = {
         inline_keyboard: [[
-          {
-            text: '🚀 Open Mailzeon',
-            // web_app buttons are the one inline-keyboard button type that
-            // opens a Mini App directly inside Telegram (as opposed to a
-            // plain `url` button, which would just open this in an
-            // external browser and lose the whole point of a Mini App).
-            web_app: { url: `${PRIMARY_FRONTEND_URL}/telegram` },
-          },
+          { text: '🚀 Open Mailzeon', web_app: { url: `${PRIMARY_FRONTEND_URL}/telegram` } },
         ]],
-      },
-    };
+      };
+    }
 
     try {
       const res = await fetch(url, {
@@ -50,11 +49,23 @@ export const telegramBotService = {
         console.error('[TelegramBot] sendMessage failed:', res.status, await res.text());
       }
     } catch (err) {
-      // Never let a failed Telegram API call take down the webhook
-      // handler — worst case, the user just doesn't get the welcome
-      // message and falls back to the menu button, which works
-      // independently of this.
+      // Never let a failed Telegram API call break whatever real action
+      // triggered this notification (order accepted, wallet credited,
+      // etc.) — worst case, this one side-channel silently doesn't
+      // deliver, same fire-and-forget philosophy as web-push/email.
       console.error('[TelegramBot] sendMessage request failed:', err);
     }
+  },
+
+  // Sends the "tap below to open the app" welcome message — the reply to
+  // /start specifically. Everything else this bot ever sends goes through
+  // sendMessage() above instead.
+  async sendWelcomeMessage(chatId: number): Promise<void> {
+    await telegramBotService.sendMessage(
+      chatId,
+      '👋 Welcome to Mailzeon!\n\n' +
+      'Order email accounts, track your orders, or fulfill orders and earn — all from right here in Telegram.\n\n' +
+      'Tap the button below to get started.'
+    );
   },
 };
