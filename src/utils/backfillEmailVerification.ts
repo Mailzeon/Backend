@@ -56,6 +56,19 @@ export async function backfillEmailVerification(): Promise<void> {
       { emailVerificationStatus: { $exists: false } },
       { emailVerificationStatus: 'unknown' },
     ],
+    // BUG FIX (Aug 2026): Telegram-origin accounts (see auth.service.ts
+    // telegramLogin()) get an internal placeholder email that was NEVER
+    // meant to be a real, checkable address — checking it here just
+    // "correctly" confirms it doesn't exist (it genuinely doesn't — it's
+    // not a real domain), permanently flagging a brand-new, perfectly
+    // normal account with a scary red "confirmed doesn't exist" badge and
+    // an extra order-blocking gate, for something that was never a real
+    // problem. Excluded entirely — these accounts stay in a neutral
+    // "no email set" state (see ProfilePage.tsx's hasNoRealEmail check)
+    // until the person actually sets a real email themselves, at which
+    // point the normal save/re-verify flow picks it up like any other
+    // email change.
+    email: { $not: /^tg_\d+@telegram\.mailzeon\.internal$/ },
   }).select('_id email');
 
   console.log(`[Backfill] Email verification found ${candidates.length} candidate(s) needing (re-)check.`);
