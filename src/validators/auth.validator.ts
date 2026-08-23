@@ -77,3 +77,9 @@ export const telegramLoginSchema = z.object({
   role: z.enum(['customer', 'worker']).optional(),
   referralCode: z.string().trim().max(20).optional(),
 });
+
+export const telegramLinkSchema = z.object({
+  initData: z.string().min(1, 'Missing Telegram init data'),
+  email: z.string().email('Enter a valid email address'),
+  password: z.string().min(1, 'Password is required'),
+});
