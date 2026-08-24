@@ -473,19 +473,23 @@ router.get('/wallet-transactions', async (req: Request, res: Response) => {
 });
 
 // ── Referral program monitoring ─────────────────────────────────────────
-// Platform-wide view of every worker who referred someone, how many
-// they've referred, and total payouts — the per-worker "Refer & Earn" page
-// (see user.routes.ts /me/referral) only shows one person's own numbers.
+// Platform-wide view of every worker OR customer who's referred someone,
+// how many they've referred, and total payouts — the per-account "Refer &
+// Earn" page (see user.routes.ts /me/referral) only shows one person's
+// own numbers. Covers BOTH independent referral programs (see
+// Order.model.ts field comments) in one combined, role-tagged list —
+// this used to hardcode role: 'worker' only, silently missing every
+// customer referrer entirely.
 router.get('/referrals', async (_req: Request, res: Response) => {
-  const referrers = await User.find({ role: 'worker' })
-    .select('name email referralCode')
+  const referrers = await User.find({ role: { $in: ['worker', 'customer'] } })
+    .select('name email role referralCode')
     .lean();
 
   const withReferrals = await Promise.all(
     referrers
       .filter(r => r.referralCode)
       .map(async r => {
-        const referred = await User.find({ referredBy: r._id }).select('name createdAt').lean();
+        const referred = await User.find({ referredBy: r._id, role: r.role }).select('name createdAt').lean();
         if (referred.length === 0) return null;
 
         const totalPaidAgg = await Transaction.aggregate([
@@ -494,7 +498,7 @@ router.get('/referrals', async (_req: Request, res: Response) => {
         ]);
 
         return {
-          referrer: { _id: r._id, name: r.name, email: r.email, referralCode: r.referralCode },
+          referrer: { _id: r._id, name: r.name, email: r.email, role: r.role, referralCode: r.referralCode },
           referredCount: referred.length,
           referred,
           totalPaid: totalPaidAgg[0]?.total ?? 0,
