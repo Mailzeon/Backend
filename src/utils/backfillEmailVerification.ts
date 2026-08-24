@@ -41,6 +41,25 @@ import { checkEmailExists } from './emailVerification';
 export async function backfillEmailVerification(): Promise<void> {
   console.log('[Backfill] Email verification check starting...');
 
+  // BUG FIX (Aug 2026): before the exclusion below existed, real Telegram-
+  // origin accounts had ALREADY been wrongly checked and flagged
+  // 'invalid' by an earlier run of this same job — a genuine, real
+  // person's account, correctly blocked from nothing wrong at all, not a
+  // throwaway/test case to just tell them to fix themselves. This
+  // retroactively corrects any account already caught by that bug, every
+  // time this runs, so it self-heals on the next deploy with no manual
+  // admin action needed for anyone currently affected.
+  const corrected = await User.updateMany(
+    {
+      email: /^tg_\d+@telegram\.mailzeon\.internal$/,
+      emailVerificationStatus: { $in: ['invalid', 'valid'] },
+    },
+    { $unset: { emailVerificationStatus: 1, emailVerifiedCheckedAt: 1 } }
+  );
+  if (corrected.modifiedCount > 0) {
+    console.log(`[Backfill] Corrected ${corrected.modifiedCount} Telegram-origin account(s) wrongly flagged by an earlier run.`);
+  }
+
   // BUG FIX (Aug 2026, round 2): this used to gate on
   // `emailVerifiedCheckedAt` — but that field was ALSO used by an OLDER,
   // now-removed boolean-based version of this backfill (before
