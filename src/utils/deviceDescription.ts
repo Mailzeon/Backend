@@ -27,7 +27,21 @@ export function describeDevice(userAgent: string | undefined): string {
 
   const { device, os, browser } = UAParser(userAgent);
 
-  const deviceLabel = [device.vendor, device.model].filter(Boolean).join(' ').trim();
+  let deviceLabel = [device.vendor, device.model].filter(Boolean).join(' ').trim();
+
+  // BUG FIX (Aug 2026): ua-parser-js occasionally mis-parses unusual User-
+  // Agent strings (Telegram's in-app Android WebView being the main
+  // source seen so far) into a bogus single-character "model" like "K" —
+  // clearly a regex-matched fragment, not a real device name (no genuine
+  // phone model is ever 1-2 characters). Rejected outright rather than
+  // shown as if it were reliable — falls through to the OS+browser-only
+  // label below instead, same fallback already used when nothing at all
+  // gets extracted.
+  if (deviceLabel && deviceLabel.length < 3) {
+    console.warn('[DeviceDescription] Rejected suspiciously short device label', JSON.stringify(deviceLabel), 'from UA:', userAgent);
+    deviceLabel = '';
+  }
+
   const osLabel = os.name ? `${os.name}${os.version ? ` ${os.version}` : ''}` : null;
   const browserLabel = browser.name || null;
 
