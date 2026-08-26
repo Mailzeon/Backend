@@ -48,6 +48,34 @@ export const createOrder = async (req: Request, res: Response) => {
   }, 201);
 };
 
+export const createBulkOrder = async (req: Request, res: Response) => {
+  const { serviceName, domain, emailType, amount, quantity, customLocalParts, useWalletCredit } = req.body;
+
+  const result = await orderService.createBulkOrder(
+    req.user!._id.toString(),
+    serviceName,
+    domain,
+    emailType,
+    amount,
+    quantity,
+    customLocalParts,
+    useWalletCredit
+  );
+
+  const message = result.paidWithWallet
+    ? `${quantity} orders created and paid with wallet credit — they're already live in the marketplace!`
+    : result.batch.walletAmountApplied > 0
+      ? 'Wallet credit applied — complete the remaining payment to publish your orders.'
+      : `${quantity} orders created. Complete payment to publish them to the marketplace.`;
+
+  sendSuccess(res, message, {
+    batch: result.batch,
+    paymentSessionId: result.paymentSessionId,
+    paidWithWallet: result.paidWithWallet,
+    walletAmountApplied: result.batch.walletAmountApplied,
+  }, 201);
+};
+
 export const cancelOrder = async (req: Request, res: Response) => {
   const order = await orderService.cancelOrder(req.params.id, req.user!._id.toString());
   sendSuccess(res, 'Order cancelled successfully.', order);
