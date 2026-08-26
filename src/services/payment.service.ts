@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { env, PRIMARY_FRONTEND_URL } from '../config/env';
 import { CASHFREE_BASE_URL, cashfreeHeaders } from '../config/cashfree';
 import { Order } from '../models/Order.model';
+import { OrderBatch } from '../models/OrderBatch.model';
 import { Transaction } from '../models/Transaction.model';
 import { notificationService } from './notification.service';
 import { walletService } from './wallet.service';
@@ -45,9 +46,16 @@ export const paymentService = {
     amount: number,
     customerId: string,
     customerEmail: string,
-    customerPhone: string
+    customerPhone: string,
+    // Bulk batches use `BATCH-<batchId>` as the Cashfree order_id (see
+    // order.service.ts createBulkOrder()) — plugging that straight into
+    // the default single-order return path below would build a broken
+    // URL (no order detail page has that id). Callers creating a batch
+    // payment pass their own return path instead; every normal
+    // single-order call omits this and gets the existing behavior.
+    returnPath?: string
   ): Promise<CreateCashfreeOrderResult> {
-    const returnUrl = `${PRIMARY_FRONTEND_URL}/customer/orders/${orderId}?payment=return`;
+    const returnUrl = `${PRIMARY_FRONTEND_URL}${returnPath ?? `/customer/orders/${orderId}?payment=return`}`;
     const notifyUrl = `${env.BACKEND_URL}/api/payments/webhook`;
 
     const res = await fetch(`${CASHFREE_BASE_URL}/orders`, {
@@ -317,6 +325,116 @@ export const paymentService = {
       message: `Your payment for "${order.serviceName}" did not go through. You can place a new order to try again.`,
       type:    'order',
       orderId: order._id,
+    });
+  },
+
+  // ── Bulk order batch: idempotent success transition ─────────────────────
+  // Mirrors confirmPaymentSuccess() above, but for a whole batch — marks
+  // the ONE payment as done, then transitions EVERY child order
+  // individually (each with its own history entry, its own marketplace
+  // broadcast) so workers see N separate listings, not one combined one.
+  async confirmBatchPaymentSuccess(batchId: string): Promise<void> {
+    const batch = await OrderBatch.findOneAndUpdate(
+      { _id: batchId, status: 'payment_pending' },
+      { status: 'completed' },
+      { new: true }
+    );
+    if (!batch) return; // Already processed or not in the expected state — no-op
+
+    const orders = await Order.find({ batchId: batch._id, status: 'payment_pending' });
+    const batchRef = batch._id.toString().slice(-6).toUpperCase();
+
+    for (const order of orders) {
+      order.status = 'pending';
+      order.paymentStatus = 'success';
+      await order.save();
+
+      await orderHistoryService.log(order._id.toString(), 'payment_confirmed', {
+        actorRole: 'system',
+        message: `Payment confirmed as part of bulk batch #${batchRef} (${batch.quantity} accounts). Order is now live in the marketplace.`,
+      });
+
+      emitToMarketplace(EVENTS.NEW_ORDER, {
+        _id:            order._id,
+        serviceName:    order.serviceName,
+        amount:         order.amount,
+        workerEarning:  order.workerEarning,
+        requestedEmail: order.requestedEmail,
+        createdAt:      order.createdAt,
+      });
+    }
+
+    // Fire all N push notifications together (not sequentially awaited
+    // one-by-one) — each is independently fire-and-forget, same as the
+    // single-order flow, just N of them instead of one.
+    orders.forEach(order => {
+      sendPushToAllWorkers({
+        title:   '🆕 New order available!',
+        message: `${order.serviceName} — ₹${order.workerEarning} to earn. Tap to view.`,
+        orderId: order._id.toString(),
+        url:     '/worker/marketplace',
+      }).catch(err => console.error('[Payment] Batch worker push broadcast failed for order', order._id.toString(), ':', err));
+    });
+
+    const cashfreeCharged = Math.round((batch.totalAmount - batch.walletAmountApplied) * 100) / 100;
+    let paymentMessage: string;
+    if (batch.walletAmountApplied > 0 && cashfreeCharged === 0) {
+      paymentMessage = `Paid entirely with ₹${batch.walletAmountApplied} wallet credit — your ${batch.quantity} orders are now live in the marketplace.`;
+    } else if (batch.walletAmountApplied > 0) {
+      paymentMessage = `₹${batch.walletAmountApplied} wallet credit + ₹${cashfreeCharged} payment received. Your ${batch.quantity} orders are now live in the marketplace.`;
+    } else {
+      paymentMessage = `Your payment of ₹${batch.totalAmount} was successful. Your ${batch.quantity} orders are now live in the marketplace.`;
+    }
+
+    await notificationService.create({
+      userId:  batch.customerId,
+      title:   '✅ Payment Successful!',
+      message: paymentMessage,
+      type:    'order',
+    });
+  },
+
+  // ── Bulk order batch: idempotent failure transition ─────────────────────
+  async markBatchPaymentFailed(batchId: string): Promise<void> {
+    const batch = await OrderBatch.findOneAndUpdate(
+      { _id: batchId, status: 'payment_pending' },
+      { status: 'payment_failed' },
+      { new: true }
+    );
+    if (!batch) return; // Already processed — no-op
+
+    const orders = await Order.find({ batchId: batch._id, status: 'payment_pending' }).select('_id');
+    await Order.updateMany(
+      { batchId: batch._id, status: 'payment_pending' },
+      { status: 'payment_failed', paymentStatus: 'failed' }
+    );
+
+    const batchRef = batch._id.toString().slice(-6).toUpperCase();
+    await Promise.all(orders.map(o =>
+      orderHistoryService.log(o._id.toString(), 'payment_failed', {
+        actorRole: 'system',
+        message: `Payment failed for bulk batch #${batchRef}.` +
+          (batch.walletAmountApplied > 0 ? ` Wallet portion refunded.` : ''),
+      })
+    ));
+
+    // Wallet refund happens ONCE for the whole batch (it was deducted
+    // once, at the batch level, not per-order) — refunded against
+    // whichever order happens to be first, purely so creditRefund() has
+    // an orderId to attach the transaction record to; the money and the
+    // customer-facing message both make clear this is for the batch.
+    if (batch.walletAmountApplied > 0 && orders.length > 0) {
+      await walletService.creditRefund(
+        batch.customerId.toString(), batch.walletAmountApplied, orders[0]._id,
+        `Refund: Bulk batch #${batchRef} payment failed — wallet portion returned`
+      );
+    }
+
+    await notificationService.create({
+      userId:  batch.customerId,
+      title:   'Payment Failed',
+      message: `Your payment for the bulk order of ${batch.quantity}x "${batch.serviceName}" did not go through. You can place a new order to try again.`,
+      type:    'order',
     });
   },
 };
