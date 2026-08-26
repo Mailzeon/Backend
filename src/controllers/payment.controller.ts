@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { paymentService } from '../services/payment.service';
 import { walletService } from '../services/wallet.service';
 import { Order } from '../models/Order.model';
+import { OrderBatch } from '../models/OrderBatch.model';
 import { sendSuccess, sendError } from '../utils/response';
 
 /**
@@ -48,13 +49,20 @@ export const handleWebhook = async (req: Request, res: Response): Promise<void> 
   }
 
   try {
-    // Wallet recharges use a `WALLET-<transactionId>` order_id — route them
-    // to the wallet service instead of the regular order-payment flow.
+    // Wallet recharges use a `WALLET-<transactionId>` order_id, and bulk
+    // order batches use `BATCH-<batchId>` — route each to its own service
+    // instead of the regular single-order payment flow. Order matters:
+    // check the more specific prefixes before falling through to "this
+    // must be a plain single order."
     const isWalletRecharge = typeof orderId === 'string' && orderId.startsWith('WALLET-');
+    const isBatchPayment   = typeof orderId === 'string' && orderId.startsWith('BATCH-');
+    const batchId          = isBatchPayment ? orderId.replace('BATCH-', '') : null;
 
     if (payload.type === 'PAYMENT_SUCCESS_WEBHOOK' && paymentStatus === 'SUCCESS') {
       if (isWalletRecharge) {
         await walletService.confirmRechargeSuccess(orderId);
+      } else if (isBatchPayment) {
+        await paymentService.confirmBatchPaymentSuccess(batchId!);
       } else {
         await paymentService.confirmPaymentSuccess(orderId);
       }
@@ -65,6 +73,8 @@ export const handleWebhook = async (req: Request, res: Response): Promise<void> 
     ) {
       if (isWalletRecharge) {
         await walletService.markRechargeFailed(orderId);
+      } else if (isBatchPayment) {
+        await paymentService.markBatchPaymentFailed(batchId!);
       } else {
         await paymentService.markPaymentFailed(orderId);
       }
@@ -116,6 +126,41 @@ export const verifyPayment = async (req: Request, res: Response): Promise<void> 
 
   const updated = await Order.findById(orderId);
   sendSuccess(res, 'Payment status checked.', { status: updated!.status });
+};
+
+/**
+ * Same idea as verifyPayment above, but for a bulk order batch — called by
+ * the frontend right after the customer is redirected back from Cashfree
+ * to /customer/orders?batch=<batchId>&payment=return.
+ */
+export const verifyBatchPayment = async (req: Request, res: Response): Promise<void> => {
+  const { batchId } = req.params;
+
+  const batch = await OrderBatch.findOne({ _id: batchId, customerId: req.user!._id });
+  if (!batch) { sendError(res, 'Order batch not found.', 404); return; }
+
+  if (batch.status !== 'payment_pending') {
+    // Webhook (or an earlier verify call) already resolved this batch
+    sendSuccess(res, 'Batch already processed.', { status: batch.status });
+    return;
+  }
+
+  if (!batch.cashfreeOrderId) {
+    sendError(res, 'Payment was never initiated for this batch.', 400);
+    return;
+  }
+
+  const cfStatus = await paymentService.getCashfreeOrderStatus(batch.cashfreeOrderId);
+
+  if (cfStatus === 'PAID') {
+    await paymentService.confirmBatchPaymentSuccess(batchId);
+  } else if (cfStatus === 'EXPIRED' || cfStatus === 'TERMINATED') {
+    await paymentService.markBatchPaymentFailed(batchId);
+  }
+  // If still 'ACTIVE', leave as payment_pending — frontend can show a "still waiting" state.
+
+  const updated = await OrderBatch.findById(batchId);
+  sendSuccess(res, 'Payment status checked.', { status: updated!.status, quantity: updated!.quantity });
 };
 
 /**
