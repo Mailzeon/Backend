@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
 import { requireRole } from '../middleware/role.middleware';
-import { verifyPayment, verifyWalletRecharge } from '../controllers/payment.controller';
+import { verifyPayment, verifyWalletRecharge, verifyBatchPayment } from '../controllers/payment.controller';
 
 const router = Router();
 
@@ -10,5 +10,6 @@ const router = Router();
 // parser) since it needs the raw request body for signature verification.
 router.get('/verify/:orderId',            authenticate, requireRole('customer'), verifyPayment);
 router.get('/verify-recharge/:transactionId', authenticate, requireRole('customer'), verifyWalletRecharge);
+router.get('/verify-batch/:batchId',      authenticate, requireRole('customer'), verifyBatchPayment);
 
 export default router;
