@@ -142,6 +142,16 @@ export interface IOrder extends Document {
   // captured in OrderHistory regardless.
   lastAbandonedWorkerId?: Types.ObjectId;
 
+  // NEW — bulk ordering (see order.service.ts createBulkOrder() /
+  // models/OrderBatch.model.ts). Set only when this order was created as
+  // part of a bulk placement — one customer payment covering N of these.
+  // Unset (undefined) for every normal, single-order placement, which is
+  // the vast majority of orders and stays completely unaffected by this
+  // field's existence. Each order with a shared batchId is still fully
+  // independent from here on — separate marketplace listing, separate
+  // accept/complete/dispute lifecycle, exactly like any other order.
+  batchId?: Types.ObjectId;
+
   // ── Wrong-password dispute grace window ──────────────────────────────
   // See utils/disputeGrace.ts + order.service.ts reportProblem()/
   // resubmitCredentials(). When a customer disputes with reason
@@ -292,6 +302,7 @@ const OrderSchema = new Schema<IOrder>(
     autoCompleteAt: Date,
     completedAt: Date,
     lastAbandonedWorkerId: { type: Schema.Types.ObjectId, ref: 'User' },
+    batchId: { type: Schema.Types.ObjectId, ref: 'OrderBatch', index: true },
     wrongPasswordGraceDeadline: Date,
     wrongPasswordGraceUsed: { type: Boolean, default: false },
     wrongPasswordPenaltyAmount: Number,
