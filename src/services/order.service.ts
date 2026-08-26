@@ -1,4 +1,5 @@
 import { Order, IOrder }        from '../models/Order.model';
+import { OrderBatch, IOrderBatch } from '../models/OrderBatch.model';
 import { Types }                from 'mongoose';
 import { Dispute }              from '../models/Dispute.model';
 import { RefundRequest }        from '../models/RefundRequest.model';
@@ -309,6 +310,209 @@ export const orderService = {
         await walletService.creditRefund(
           customerId, walletAmountApplied, order._id,
           `Refund: Order #${orderRef} payment setup failed — wallet portion returned`
+        );
+      }
+
+      throw err;
+    }
+  },
+
+  // ── Customer: bulk order — ONE payment, N separate orders ──────────────
+  // Every resulting order is a completely normal, independent Order
+  // document — individually visible in the marketplace, individually
+  // acceptable by any (different) worker, individually tracked through
+  // its own accept/credentials/complete/dispute lifecycle. The ONLY thing
+  // shared across them is the one payment that covers all of them (see
+  // models/OrderBatch.model.ts) and, for 'custom' email type, one
+  // requested local-part per account from customLocalParts.
+  async createBulkOrder(
+    customerId: string,
+    serviceName: string,
+    domain: string,
+    emailType: 'random' | 'custom',
+    amountPerOrder: number,
+    quantity: number,
+    customLocalParts: string[] | undefined,
+    useWalletCredit?: boolean
+  ): Promise<{ batch: IOrderBatch; paymentSessionId: string | null; paidWithWallet: boolean }> {
+    const minAmount = parseInt(await getSetting('minimumOrderAmount', '15'));
+    if (amountPerOrder < minAmount) {
+      throwErr(`Minimum amount is ₹${minAmount} per account.`, 400);
+    }
+
+    const maxQty = parseInt(await getSetting('maxBulkOrderQuantity', '50'));
+    if (quantity > maxQty) {
+      throwErr(`Bulk orders are limited to ${maxQty} accounts at a time. Please split this into smaller batches.`, 400);
+    }
+
+    const customer = await User.findById(customerId);
+    if (!customer) throwErr('Customer not found.', 404);
+
+    if (!customer!.phoneVerified || !customer!.phone) {
+      throwErr('Please add and verify a phone number in your profile before placing an order.', 400);
+    }
+    const finalPhone = customer!.phone!;
+
+    if (customer!.emailVerificationStatus === 'invalid') {
+      throwErr('Your account email does not appear to be valid. Please update it in your profile before placing an order.', 400);
+    }
+
+    // ── Build the list of requested emails (custom only) ─────────────────
+    let requestedEmails: (string | undefined)[] = new Array(quantity).fill(undefined);
+    if (emailType === 'custom') {
+      const localParts = customLocalParts!.map(p => p.trim().toLowerCase());
+
+      // Reject duplicate local-parts within the SAME batch up front — two
+      // orders both requesting the identical address is never fulfillable
+      // (only one worker could ever actually claim it), so this is caught
+      // here with a clear, actionable message instead of surfacing later
+      // as a confusing "already taken" on whichever order happens to get
+      // accepted second.
+      const seen = new Set<string>();
+      const dupes = new Set<string>();
+      for (const p of localParts) {
+        if (seen.has(p)) dupes.add(p);
+        seen.add(p);
+      }
+      if (dupes.size > 0) {
+        throwErr(`Duplicate names in this batch: ${[...dupes].join(', ')}. Each account needs a unique name.`, 400);
+      }
+
+      requestedEmails = localParts.map(p => `${p}@${domain}`);
+
+      // Same up-front existence check as the single-order flow, run for
+      // every requested address in parallel — checked here as one batch
+      // rather than one-by-one so the customer sees every problem address
+      // at once instead of fixing them one at a time across repeated
+      // submit attempts.
+      const checks = await Promise.all(requestedEmails.map(email => checkEmailExists(email!)));
+      const taken = requestedEmails.filter((_, i) => checks[i] === 'valid');
+      if (taken.length > 0) {
+        throwErr(`These addresses are already taken: ${taken.join(', ')}. Please choose different names.`, 409);
+      }
+    }
+
+    // ── Pricing (per-order, computed once and reused for every account —
+    // every account in a bulk batch shares the same price) ───────────────
+    const commissionPercent = parseInt(await getSetting('platformCommissionRate', '15'));
+    const commissionRate    = commissionPercent / 100;
+    const platformCommission = Math.round(amountPerOrder * commissionRate * 100) / 100;
+    const workerEarning      = Math.round((amountPerOrder - platformCommission) * 100) / 100;
+
+    let customerReferralBonusRate: number | undefined;
+    let customerReferralBonusAmount: number | undefined;
+    let customerReferrerId: Types.ObjectId | undefined;
+    if (customer!.referredBy) {
+      customerReferralBonusRate = parseFloat(await getSetting('customerReferralBonusRate', '3'));
+      customerReferralBonusAmount = Math.round(workerEarning * (customerReferralBonusRate / 100) * 100) / 100;
+      customerReferrerId = customer!.referredBy as Types.ObjectId;
+    }
+
+    const totalAmount = Math.round(amountPerOrder * quantity * 100) / 100;
+
+    // Same atomic wallet-credit pattern as the single-order flow, just
+    // applied against the TOTAL for the whole batch in one shot rather
+    // than per-account.
+    let walletAmountApplied = 0;
+    if (useWalletCredit) {
+      const wallet = await walletService.getBalance(customerId);
+      const toApply = Math.min(wallet.balance, totalAmount);
+      if (toApply > 0) {
+        const debited = await Wallet.findOneAndUpdate(
+          { userId: customerId, balance: { $gte: toApply } },
+          { $inc: { balance: -toApply } },
+          { new: true }
+        );
+        if (debited) walletAmountApplied = toApply;
+      }
+    }
+
+    const remainingAmount = Math.round((totalAmount - walletAmountApplied) * 100) / 100;
+
+    const batch = await OrderBatch.create({
+      customerId,
+      serviceName: serviceName.trim(),
+      domain,
+      emailType,
+      amountPerOrder,
+      quantity,
+      totalAmount,
+      walletAmountApplied,
+      status: 'payment_pending',
+    });
+
+    // insertMany, not a loop of individual .create() calls — this can be
+    // up to 200 documents (see the Zod schema's upper bound), and a single
+    // bulk insert is meaningfully faster and avoids 200 separate round
+    // trips to Mongo for what's fundamentally one atomic-ish operation.
+    const orderDocs = Array.from({ length: quantity }, (_, i) => ({
+      customerId,
+      serviceName: serviceName.trim(),
+      amount: amountPerOrder,
+      workerEarning,
+      platformCommission,
+      commissionRate,
+      requestedEmail: requestedEmails[i],
+      domain,
+      emailType,
+      status: 'payment_pending' as const,
+      paymentStatus: 'pending' as const,
+      // Wallet credit was deducted once at the BATCH level above, not
+      // per-order — each child order's own walletAmountApplied stays 0.
+      // confirmBatchPaymentSuccess() in payment.service.ts handles the
+      // batch-level wallet messaging separately.
+      walletAmountApplied: 0,
+      customerReferralBonusRate,
+      customerReferralBonusAmount,
+      customerReferrerId,
+      batchId: batch._id,
+    }));
+
+    const orders = await Order.insertMany(orderDocs);
+
+    const batchRef = batch._id.toString().slice(-6).toUpperCase();
+    await Promise.all(orders.map(o =>
+      orderHistoryService.log(o._id.toString(), 'created', {
+        actorId: customerId, actorRole: 'customer',
+        message: `Order created as part of bulk batch #${batchRef} (${quantity} accounts) — ${serviceName.trim()} (${o.requestedEmail ?? `any @${domain}`}), ₹${amountPerOrder}.`,
+      })
+    ));
+
+    if (remainingAmount === 0) {
+      await paymentService.confirmBatchPaymentSuccess(batch._id.toString());
+      return { batch, paymentSessionId: null, paidWithWallet: true };
+    }
+
+    try {
+      const cashfreeOrderId = `BATCH-${batch._id.toString()}`;
+      const { paymentSessionId } = await paymentService.createCashfreeOrder(
+        cashfreeOrderId,
+        remainingAmount,
+        customerId,
+        customer!.email,
+        finalPhone,
+        // Bulk batches produce N separate orders, not one — land back on
+        // the orders LIST (which picks up ?batch=<id> and verifies it),
+        // not a single order's detail page.
+        `/customer/orders?batch=${batch._id.toString()}&payment=return`
+      );
+
+      batch.cashfreeOrderId = cashfreeOrderId;
+      await batch.save();
+
+      return { batch, paymentSessionId, paidWithWallet: false };
+    } catch (err) {
+      batch.status = 'payment_failed';
+      await batch.save();
+      await Order.updateMany(
+        { batchId: batch._id, status: 'payment_pending' },
+        { status: 'payment_failed', paymentStatus: 'failed' }
+      );
+
+      if (walletAmountApplied > 0) {
+        await walletService.creditRefund(
+          customerId, walletAmountApplied, orders[0]._id,
+          `Refund: Bulk batch #${batchRef} payment setup failed — wallet portion returned`
         );
       }
 
