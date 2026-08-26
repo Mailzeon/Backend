@@ -58,6 +58,11 @@ export const seedDefaultSettings = async (): Promise<void> => {
       description: 'Minimum amount (INR) a customer can set when creating an order',
     },
     {
+      key: 'maxBulkOrderQuantity',
+      value: '50',
+      description: 'Maximum number of accounts a customer can order in a single bulk placement',
+    },
+    {
       key: 'platformCommissionRate',
       value: '15',
       description: 'Platform commission percentage deducted from every order (worker keeps the rest)',
