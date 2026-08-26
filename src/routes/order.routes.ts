@@ -3,11 +3,11 @@ import { authenticate } from '../middleware/auth.middleware';
 import { requireRole, requireApprovedWorker } from '../middleware/role.middleware';
 import { validate } from '../middleware/validate.middleware';
 import {
-  createOrderSchema, submitCredentialsSchema, resubmitCredentialsSchema, checkEmailSchema,
+  createOrderSchema, createBulkOrderSchema, submitCredentialsSchema, resubmitCredentialsSchema, checkEmailSchema,
   submitNumberSchema, submitCodeSchema, reportProblemSchema,
 } from '../validators/order.validator';
 import {
-  createOrder, cancelOrder, getMarketplace, acceptOrder, submitCredentials, resubmitCredentials,
+  createOrder, createBulkOrder, cancelOrder, getMarketplace, acceptOrder, submitCredentials, resubmitCredentials,
   submitVerificationNumber, confirmVerificationNumber,
   requestVerificationCode, submitVerificationCode,
   confirmSuccess, reportProblem, getOrder, getMyOrders, getAssignedOrders,
@@ -24,6 +24,7 @@ router.use(authenticate);
 // with the other customer routes for readability.
 router.post('/check-email',           requireRole('customer'), validate(checkEmailSchema), checkEmail);
 router.post('/',                      requireRole('customer'), validate(createOrderSchema), createOrder);
+router.post('/bulk',                  requireRole('customer'), validate(createBulkOrderSchema), createBulkOrder);
 router.get('/my',                     requireRole('customer'), getMyOrders);
 router.patch('/:id/cancel',           requireRole('customer'), cancelOrder);
 router.patch('/:id/submit-number',    requireRole('customer'), validate(submitNumberSchema), submitVerificationNumber);
