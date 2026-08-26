@@ -48,6 +48,48 @@ export const createOrderSchema = z.object({
   { message: 'Enter your custom email name', path: ['customLocalPart'] }
 );
 
+// ── Bulk ordering ────────────────────────────────────────────────────────
+// One payment, N individually-marketplace-visible orders — see
+// order.service.ts createBulkOrder() / models/OrderBatch.model.ts. `amount`
+// here is PER order (same shared price across the whole batch), not the
+// total — the real minimum-amount check against the live setting still
+// happens in the service layer, same reasoning as createOrderSchema above.
+// `quantity`'s upper bound is a defensive Zod-level sanity cap only — the
+// REAL, admin-adjustable ceiling (maxBulkOrderQuantity) is enforced live in
+// the service layer, exactly like minimumOrderAmount is for amount.
+export const createBulkOrderSchema = z.object({
+  serviceName: z.string()
+    .trim()
+    .min(3, 'Service name must be at least 3 characters')
+    .max(200, 'Service name must be under 200 characters'),
+  domain: z.enum(EMAIL_DOMAINS, {
+    errorMap: () => ({ message: 'Select a valid email domain' }),
+  }),
+  emailType: z.enum(['random', 'custom'], {
+    errorMap: () => ({ message: 'Choose random or custom email' }),
+  }),
+  amount: z.coerce.number({ invalid_type_error: 'Amount must be a number' })
+    .min(1, 'Amount must be at least ₹1')
+    .max(100000, 'For orders above ₹1,00,000 per account please contact support'),
+  quantity: z.coerce.number({ invalid_type_error: 'Quantity must be a number' })
+    .int('Quantity must be a whole number')
+    .min(2, 'Bulk orders need at least 2 accounts — for just one, use the regular order form')
+    .max(200, 'That\'s too many for one batch — please contact support for very large orders'),
+  // Required (and length-checked against quantity) only when emailType is
+  // 'custom' — one local-part per account, e.g. ["shopfront1", "shopfront2"].
+  // Each becomes its own separate order requesting that exact address.
+  customLocalParts: z.array(
+    z.string()
+      .trim()
+      .toLowerCase()
+      .regex(/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/, 'Use only letters, numbers, dots, underscores or hyphens')
+  ).optional(),
+  useWalletCredit: z.boolean().optional(),
+}).refine(
+  (data) => data.emailType !== 'custom' || (data.customLocalParts && data.customLocalParts.length === data.quantity),
+  { message: 'Enter one custom email name per account', path: ['customLocalParts'] }
+);
+
 // NEW: pre-payment availability check — customer picks a domain + custom
 // name and hits "Check" BEFORE the amount/pay step. Same shape as the
 // custom-email half of createOrderSchema above, just without the rest of
