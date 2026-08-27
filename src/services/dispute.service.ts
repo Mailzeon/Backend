@@ -79,7 +79,11 @@ export const disputeService = {
       workerLevelDoc, workerCompletedOrders, workerDisputesAgainst, workerDisputesUpheldAgainst,
       recentWorkerRatings,
     ] = await Promise.all([
-      Order.countDocuments({ customerId: customer._id }),
+      // Same fix as admin.routes.ts /stats — a customer's "total orders"
+      // for this fraud-signal ratio shouldn't include payment attempts
+      // that never became real orders, or it understates their real
+      // dispute rate.
+      Order.countDocuments({ customerId: customer._id, status: { $nin: ['payment_pending', 'payment_failed'] } }),
       Dispute.countDocuments({ customerId: customer._id }),
       Dispute.countDocuments({ customerId: customer._id, status: 'resolved' }),
       WorkerLevelModel.findOne({ workerId: worker._id }).lean(),
