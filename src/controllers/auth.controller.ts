@@ -18,7 +18,9 @@ export const register = async (req: Request, res: Response): Promise<void> => {
   setAuthCookie(res, token);
 
   const message = role === 'worker'
-    ? 'Account created! Your account is pending admin approval. You will be notified once approved.'
+    ? (user.isApproved
+        ? 'Account created! You are approved and can start accepting orders right away.'
+        : 'Account created! Your account is temporarily held due to a shared device/network restriction — it will be approved automatically once that clears. You will be notified.')
     : 'Account created successfully! Welcome to Marketplace.';
 
   // BUG FIX (Aug 2026): the token WAS deliberately left out of the response
