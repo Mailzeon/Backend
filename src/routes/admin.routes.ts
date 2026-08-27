@@ -52,11 +52,20 @@ router.get('/stats', async (_req: Request, res: Response) => {
     computeLiveOnlineWorkerCount(),
     Order.countDocuments({ status: 'pending' }),
     Order.countDocuments({ status: 'completed' }),
-    Order.countDocuments(),
+    // FIX: this used to be a bare countDocuments() — every order document
+    // ever created, including 'payment_pending' (customer hasn't finished
+    // paying yet) and 'payment_failed' (payment attempt never succeeded —
+    // no money moved, no worker was ever involved). Neither of those is a
+    // real order; counting them inflated this number with pure checkout
+    // noise. 'cancelled' orders ARE still counted — payment succeeded on
+    // those, they were genuine orders that just didn't complete.
+    Order.countDocuments({ status: { $nin: ['payment_pending', 'payment_failed'] } }),
     WithdrawRequest.countDocuments({ status: 'pending' }),
     RefundRequest.countDocuments({ status: 'pending' }),
     Dispute.countDocuments({ status: 'open' }),
-    Order.countDocuments({ createdAt: { $gte: today } }),
+    // Same fix applied here — "today's orders" should mean today's real
+    // orders, not today's failed/abandoned checkout attempts.
+    Order.countDocuments({ createdAt: { $gte: today }, status: { $nin: ['payment_pending', 'payment_failed'] } }),
   ]);
 
   // NEW: platformCommission is now tracked per-order (locked-in at creation).
@@ -123,7 +132,9 @@ router.get('/analytics', async (_req: Request, res: Response) => {
       },
     ]),
     Order.aggregate([
-      { $match: { createdAt: { $gte: sevenDaysAgo } } },
+      // Same fix as /stats above — a day's "orders" chart shouldn't
+      // include checkout attempts that never became real orders.
+      { $match: { createdAt: { $gte: sevenDaysAgo }, status: { $nin: ['payment_pending', 'payment_failed'] } } },
       {
         $group: {
           _id:    { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
