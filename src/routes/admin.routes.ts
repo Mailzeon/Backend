@@ -325,6 +325,14 @@ router.patch('/users/:id/approve', async (req: Request, res: Response) => {
         )
       ),
     ]);
+
+    // NEW: a deliberate admin permanent-suspend gets the same linked-
+    // account cascade as an automatic confirmed-theft ban — see
+    // user.service.ts banLinkedAccounts() for the matching rule (both IP
+    // AND device required).
+    await userService.banLinkedAccounts(existing._id, ips, devices).catch(err =>
+      console.error('[Admin] Failed to cascade-ban linked accounts:', err)
+    );
   }
   // Reactivating a previously-suspended worker — undo the lock above so
   // they can actually accept orders again, and release any IPs/devices
