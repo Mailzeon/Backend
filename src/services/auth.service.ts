@@ -170,14 +170,20 @@ export const authService = {
     newReferralCode = await generateUniqueReferralCode();
 
     if (referralCode?.trim()) {
-      // A referral code only ever resolves against a referrer of the SAME
-      // role as the person registering — a worker's code can't accidentally
-      // enroll a new customer into the worker program or vice versa. These
-      // are two separate reward pools (see wallet.service.ts
-      // settleOrderEarnings()) with independent settings.
+      // CROSS-ROLE (changed): a referral code now resolves against ANY
+      // referrer regardless of role — a worker's code can enroll a new
+      // customer and vice versa, on top of the original same-role case.
+      // referralCode is globally unique across every role (see
+      // User.model.ts schema), so there's never any ambiguity in this
+      // lookup. Which of the two independent reward pools actually pays
+      // out is decided later, by the REFERRED person's own role (see
+      // order.service.ts createOrder()/acceptOrder() — a referred WORKER
+      // earns their referrer a cut of their own order earnings; a
+      // referred CUSTOMER earns their referrer a cut of whichever
+      // worker fulfills their orders) — the referrer's role never
+      // matters for payout, only whose code was used.
       const referrer = await User.findOne({
         referralCode: referralCode.trim().toUpperCase(),
-        role,
       }).select('_id registrationIp lastLoginIp registrationDevice lastLoginDevice');
 
       if (referrer) {
@@ -356,9 +362,9 @@ export const authService = {
 
       let referredBy: Types.ObjectId | undefined;
       if (referralCode?.trim()) {
+        // Same cross-role resolution as register() above.
         const referrer = await User.findOne({
           referralCode: referralCode.trim().toUpperCase(),
-          role,
         }).select('_id registrationIp lastLoginIp registrationDevice lastLoginDevice');
         if (referrer) {
           const sameIp = !!ip && (referrer.registrationIp === ip || referrer.lastLoginIp === ip);
