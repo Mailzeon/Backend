@@ -112,15 +112,32 @@ export const authService = {
       );
     }
 
-    // Anti-evasion: block a brand-new WORKER registration if the IP AND
-    // device fingerprint BOTH currently have a dispute-strike/ban lock in
-    // effect (see user.service.ts applyStrike() / LockedIp.model.ts /
-    // LockedDevice.model.ts). See resolveEvasionLock() in permanentLock.ts
-    // for the full reasoning — both signals are always required now, for
-    // every kind of lock, after a real false positive proved IP-alone
+    // ── Auto-approval decision (replaces "every worker needs a manual
+    // admin click, no matter what") ──────────────────────────────────────
+    // Default: no restriction found → auto-approved immediately, isApproved
+    // true from the moment the account is created, zero admin involvement.
+    //
+    // Anti-evasion, part 1: if the IP AND device fingerprint BOTH currently
+    // have a dispute-strike/ban lock in effect (see user.service.ts
+    // applyStrike() / LockedIp.model.ts / LockedDevice.model.ts), the new
+    // signup is anti-evasion-flagged. See resolveEvasionLock() in
+    // permanentLock.ts for why both signals are always required — IP-alone
     // isn't trustworthy even for permanent bans on CGNAT-heavy Indian
-    // mobile networks. Customers aren't restricted — this penalty system
-    // only exists for worker misconduct.
+    // mobile networks.
+    //   - PERMANENT lock inherited → registration rejected outright, same
+    //     as before, account never gets created at all.
+    //   - TEMPORARY lock inherited → BEHAVIOR CHANGE: the account now DOES
+    //     get created (previously this hard-blocked registration entirely,
+    //     same as a permanent lock), but held pending: isApproved:false,
+    //     lockedUntil set to the SAME countdown the original struck account
+    //     is still serving. utils/autoApproveHeld.ts's background job
+    //     flips isApproved to true automatically the instant that
+    //     countdown ends — no admin click needed, ever, for this case.
+    // Customers aren't restricted — this penalty system only exists for
+    // worker misconduct.
+    let workerIsApproved = true;
+    let workerLockedUntil: Date | undefined;
+
     if (role === 'worker' && (ip || deviceId)) {
       const [ipLock, deviceLock] = await Promise.all([
         ip ? LockedIp.findOne({ ip, lockedUntil: { $gt: new Date() } }) : null,
@@ -134,12 +151,8 @@ export const authService = {
             403
           );
         }
-        const hoursLeft = Math.ceil((lock.lockedUntil.getTime() - Date.now()) / (60 * 60 * 1000));
-        const label = hoursLeft >= 24 ? `${Math.ceil(hoursLeft / 24)} day(s)` : `${hoursLeft} hour(s)`;
-        throwHttpError(
-          `Registration is temporarily blocked due to a recent policy violation. Try again in ${label}.`,
-          403
-        );
+        workerIsApproved = false;
+        workerLockedUntil = lock.lockedUntil;
       }
     }
 
@@ -187,6 +200,15 @@ export const authService = {
       registrationDeviceLabel: describeDevice(userAgent), lastLoginDeviceLabel: describeDevice(userAgent),
       referralCode: newReferralCode,
       referredBy,
+      // See the auto-approval block above — explicit here so it overrides
+      // the schema's "workers always start false" default (see
+      // User.model.ts isApproved) for the auto-approved (no restriction
+      // found) case. wasEverApproved mirrors isApproved at creation time:
+      // true means genuinely already approved (auto), false means held
+      // pending the countdown, not "never reviewed".
+      ...(role === 'worker'
+        ? { isApproved: workerIsApproved, lockedUntil: workerLockedUntil, wasEverApproved: workerIsApproved }
+        : {}),
     });
 
     // Workers get a wallet and level record on registration
@@ -306,10 +328,17 @@ export const authService = {
       const randomPassword   = crypto.randomBytes(24).toString('hex');
       const displayName = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ').trim() || 'Telegram User';
 
-      // Same anti-evasion registration check as the normal signup flow
-      // (see register() above) — a brand-new Telegram worker account is
-      // just as capable of being used to dodge a ban as a brand-new
-      // email/password one, so it goes through the identical gate.
+      // Same auto-approval decision as the normal signup flow (see
+      // register() above, and its comment block for the full reasoning) —
+      // a brand-new Telegram worker account is just as capable of being
+      // used to dodge a ban as a brand-new email/password one, so it goes
+      // through the identical gate: permanent lock → rejected outright;
+      // temporary lock → account created but held (isApproved:false) until
+      // utils/autoApproveHeld.ts auto-approves it; no restriction → approved
+      // immediately.
+      let workerIsApproved = true;
+      let workerLockedUntil: Date | undefined;
+
       if (role === 'worker' && (ip || deviceId)) {
         const [ipLock, deviceLock] = await Promise.all([
           ip ? LockedIp.findOne({ ip, lockedUntil: { $gt: new Date() } }) : null,
@@ -320,10 +349,8 @@ export const authService = {
           if (isPermanentLock(lock.lockedUntil)) {
             throwHttpError('Registration is permanently blocked due to a confirmed policy violation.', 403);
           }
-          throwHttpError(
-            `Registration is temporarily blocked due to a recent policy violation. Try again after ${lock.lockedUntil.toLocaleString()}.`,
-            403
-          );
+          workerIsApproved = false;
+          workerLockedUntil = lock.lockedUntil;
         }
       }
 
@@ -354,6 +381,9 @@ export const authService = {
         registrationDeviceLabel: describeDevice(userAgent), lastLoginDeviceLabel: describeDevice(userAgent),
         referralCode: await generateUniqueReferralCode(),
         referredBy,
+        ...(role === 'worker'
+          ? { isApproved: workerIsApproved, lockedUntil: workerLockedUntil, wasEverApproved: workerIsApproved }
+          : {}),
       });
 
       if (role === 'worker') {
