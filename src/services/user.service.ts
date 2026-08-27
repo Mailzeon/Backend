@@ -12,10 +12,11 @@ import { WorkerLevelModel } from '../models/WorkerLevel.model';
 import { Settings } from '../models/Settings.model';
 import { LockedIp } from '../models/LockedIp.model';
 import { LockedDevice } from '../models/LockedDevice.model';
-import { PERMANENT_LOCK_DATE } from '../utils/permanentLock';
+import { PERMANENT_LOCK_DATE, isPermanentLock } from '../utils/permanentLock';
 import { notificationService } from './notification.service';
 import { clearAuthCookie } from '../utils/cookies';
 import { pushLiveWorkerCount } from '../socket/socket';
+import { emitToUser, EVENTS } from '../socket/events';
 import { Response } from 'express';
 
 const throwErr = (msg: string, code = 400): never => {
@@ -273,6 +274,12 @@ export const userService = {
     const newStrikeCount = Math.max(worker.strikeCount ?? 0, 4);
     const lockedUntil = PERMANENT_LOCK_DATE;
 
+    // FIX: this permanent ban used to leave isApproved untouched — a
+    // confirmed-theft worker was blocked from accepting orders (via the
+    // lockedUntil check in order.service.ts), but the admin Users panel
+    // still showed them as "Approved", which was misleading. isApproved is
+    // now flipped false the same way a manual admin suspend already does.
+    worker.isApproved   = false;
     worker.strikeCount  = newStrikeCount;
     worker.lockedUntil  = lockedUntil;
     worker.lastStrikeAt = new Date();
@@ -296,6 +303,13 @@ export const userService = {
         )
       ),
     ]);
+
+    // Cascade the ban to any OTHER worker account sharing BOTH the same IP
+    // AND the same device fingerprint history as this one — see
+    // banLinkedAccounts() below for the full reasoning.
+    await userService.banLinkedAccounts(worker._id, ips, devices).catch(err =>
+      console.error('[UserService] Failed to cascade-ban linked accounts:', err)
+    );
 
     const workerMessage = reasonKind === 'wrong_password_confirmed'
       ? `A dispute over a wrong password on one of your orders was confirmed by admin after you didn't fix it ` +
@@ -338,5 +352,89 @@ export const userService = {
         console.error('[UserService] Failed to refresh worker count after theft penalty:', err)
       );
     }
+  },
+
+  // ── Cascade a permanent ban to "linked" accounts ─────────────────────────
+  // The same person often runs several worker accounts from the exact same
+  // physical device on the exact same network. This finds every OTHER
+  // worker account that shares BOTH an IP AND a device fingerprint with the
+  // one just permanently banned — never either signal alone, same
+  // "both signals required" rule as resolveEvasionLock() in
+  // permanentLock.ts, and for the exact same reason: IP-only matching is
+  // unreliable on CGNAT-heavy Indian mobile networks and would wrongly ban
+  // unrelated strangers who just happen to share a carrier IP. Requiring a
+  // DEVICE match too means this only ever fires for accounts that were
+  // genuinely opened from the same physical browser/phone.
+  //
+  // Called from applyTheftPenalty() above (automatic confirmed-theft ban)
+  // and from admin.routes.ts's manual "suspend worker" route (a deliberate
+  // admin permanent-suspend deserves the same cascade).
+  async banLinkedAccounts(
+    bannedWorkerId: Types.ObjectId,
+    ips: string[],
+    devices: string[]
+  ): Promise<number> {
+    // Both an IP and a device fingerprint on record are required to link
+    // anything at all — a worker with no history of either simply can't be
+    // matched against safely.
+    if (ips.length === 0 || devices.length === 0) return 0;
+
+    const [ipMatches, deviceMatches] = await Promise.all([
+      User.find({
+        role: 'worker',
+        _id: { $ne: bannedWorkerId },
+        isDeleted: false,
+        $or: [{ registrationIp: { $in: ips } }, { lastLoginIp: { $in: ips } }],
+      }).select('_id'),
+      User.find({
+        role: 'worker',
+        _id: { $ne: bannedWorkerId },
+        isDeleted: false,
+        $or: [{ registrationDevice: { $in: devices } }, { lastLoginDevice: { $in: devices } }],
+      }).select('_id'),
+    ]);
+
+    const ipMatchIds = new Set(ipMatches.map(u => u._id.toString()));
+    const linkedIds = deviceMatches.map(u => u._id.toString()).filter(id => ipMatchIds.has(id));
+    if (linkedIds.length === 0) return 0;
+
+    const linkedWorkers = await User.find({ _id: { $in: linkedIds } });
+    let bannedCount = 0;
+
+    for (const w of linkedWorkers) {
+      // Already permanently banned — nothing to do, and re-saving would
+      // just send a duplicate notification for no reason.
+      if (w.lockedUntil && isPermanentLock(w.lockedUntil)) continue;
+
+      w.isApproved   = false;
+      w.lockedUntil  = PERMANENT_LOCK_DATE;
+      w.strikeCount  = Math.max(w.strikeCount ?? 0, 4);
+      w.lastStrikeAt = new Date();
+      await w.save();
+      bannedCount++;
+
+      await notificationService.create({
+        userId: w._id,
+        title: '🚨 Account Permanently Banned — Linked Account',
+        message:
+          `Your account has been permanently banned because it shares the same device and network ` +
+          `history as another account that was permanently banned for a confirmed policy violation. ` +
+          `This cannot be appealed through the app.`,
+        type: 'dispute',
+      });
+      emitToUser(w._id.toString(), EVENTS.WORKER_SUSPENDED, {});
+    }
+
+    if (bannedCount > 0) {
+      const admins = await User.find({ role: 'admin' }).select('_id');
+      await Promise.all(admins.map(a => notificationService.create({
+        userId: a._id,
+        title: '🚨 Linked accounts auto-banned',
+        message: `${bannedCount} additional worker account(s) sharing device/network history with a permanently-banned worker were automatically banned too. Review from Users if any of this needs reversing.`,
+        type: 'dispute',
+      })));
+    }
+
+    return bannedCount;
   },
 };
