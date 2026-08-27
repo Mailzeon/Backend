@@ -186,13 +186,16 @@ const UserSchema = new Schema<IUser>(
     },
 
     // ── Referral program (every role can have one — see auth.service.ts
-    //    register() for how these get set). Two independent programs share
-    //    this same pair of fields: workers referring workers (a % of the
-    //    referred worker's own earning goes to the referrer — see
-    //    order.service.ts acceptOrder()/wallet.service.ts
-    //    settleOrderEarnings()), and customers referring customers (a %
-    //    deducted from the fulfilling worker's earning on the referred
-    //    customer's orders — see order.service.ts createOrder()). Admins
+    //    register() for how these get set). CROSS-ROLE: a referral code
+    //    resolves against ANY referrer regardless of role — a worker can
+    //    refer a customer and vice versa, on top of same-role referrals.
+    //    Two independent reward pools share this same pair of fields,
+    //    picked by the REFERRED person's own role, not the referrer's:
+    //    a referred worker earns their referrer a % of that worker's own
+    //    earning (see order.service.ts acceptOrder()/wallet.service.ts
+    //    settleOrderEarnings()), a referred customer earns their referrer
+    //    a % deducted from the fulfilling worker's earning on that
+    //    customer's orders (see order.service.ts createOrder()). Admins
     //    never get one; nothing in the app ever generates a code for that
     //    role. ─────────────────────────────────────────────────────────
     referralCode: {
