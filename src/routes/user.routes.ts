@@ -137,12 +137,12 @@ router.post('/mark-installed', async (req: Request, res: Response) => {
   sendSuccess(res, 'Noted.');
 });
 
-// ── Referral program (workers AND customers — two independent programs) ──
-// See auth.service.ts register() for how a referral gets recorded, and
-// wallet.service.ts settleOrderEarnings() for how each side's bonus is
-// actually paid out on completed orders.
+// ── Referral program (workers AND customers — two independent programs,
+//    now CROSS-ROLE: your link works on anyone regardless of which role
+//    they sign up as — see auth.service.ts register() for how the code
+//    resolves, and wallet.service.ts settleOrderEarnings() for how each
+//    side's bonus is actually paid out on completed orders) ─────────────
 router.get('/me/referral', requireRole('worker', 'customer'), async (req: Request, res: Response) => {
-  const myRole = req.user!.role;
   let me = await User.findById(req.user!._id).select('referralCode');
 
   // Backfill for accounts that registered before this feature existed (or,
@@ -154,20 +154,34 @@ router.get('/me/referral', requireRole('worker', 'customer'), async (req: Reques
     me = await User.findByIdAndUpdate(req.user!._id, { referralCode: code }, { new: true }).select('referralCode');
   }
 
-  const referred = await User.find({ referredBy: req.user!._id, role: myRole })
-    .select('name createdAt')
+  // No role filter — a referrer's list can now genuinely contain a mix of
+  // workers and customers, so "completed orders" has to be counted per
+  // REFERRED person's own role, not the referrer's.
+  const referred = await User.find({ referredBy: req.user!._id })
+    .select('name role createdAt')
     .sort({ createdAt: -1 })
     .lean();
 
-  const referredIds = referred.map(r => r._id);
-  const matchField = myRole === 'worker' ? 'workerId' : 'customerId';
-  const completedCounts = referredIds.length > 0
-    ? await Order.aggregate([
-        { $match: { [matchField]: { $in: referredIds }, status: 'completed' } },
-        { $group: { _id: `$${matchField}`, count: { $sum: 1 } } },
-      ])
-    : [];
-  const completedMap = new Map(completedCounts.map((c: any) => [c._id.toString(), c.count]));
+  const referredWorkerIds   = referred.filter(r => r.role === 'worker').map(r => r._id);
+  const referredCustomerIds = referred.filter(r => r.role === 'customer').map(r => r._id);
+
+  const [workerCounts, customerCounts] = await Promise.all([
+    referredWorkerIds.length > 0
+      ? Order.aggregate([
+          { $match: { workerId: { $in: referredWorkerIds }, status: 'completed' } },
+          { $group: { _id: '$workerId', count: { $sum: 1 } } },
+        ])
+      : [],
+    referredCustomerIds.length > 0
+      ? Order.aggregate([
+          { $match: { customerId: { $in: referredCustomerIds }, status: 'completed' } },
+          { $group: { _id: '$customerId', count: { $sum: 1 } } },
+        ])
+      : [],
+  ]);
+  const completedMap = new Map(
+    [...workerCounts, ...customerCounts].map((c: any) => [c._id.toString(), c.count])
+  );
 
   const totalEarnedAgg = await Transaction.aggregate([
     { $match: { userId: req.user!._id, type: 'credit', description: /^Referral bonus/, status: 'completed' } },
@@ -180,6 +194,7 @@ router.get('/me/referral', requireRole('worker', 'customer'), async (req: Reques
     totalEarned,
     referred: referred.map(r => ({
       name: r.name,
+      role: r.role,
       joinedAt: r.createdAt,
       completedOrders: completedMap.get(r._id.toString()) ?? 0,
     })),
