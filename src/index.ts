@@ -4,6 +4,7 @@ import { app }                  from './app';
 import { connectDatabase }      from './config/database';
 import { initSocket }           from './socket/socket';
 import { startAutoCompleteJob } from './utils/autoComplete';
+import { startAutoApproveHeldJob } from './utils/autoApproveHeld';
 import { recoverOrderTimers }   from './utils/recoverTimers';
 import { startKeepAlive }       from './utils/keepAlive';
 import { seedDefaultSettings }  from './models/Settings.model';
@@ -35,6 +36,7 @@ const start = async (): Promise<void> => {
     });
 
     startAutoCompleteJob();
+    startAutoApproveHeldJob();
     startKeepAlive();
 
     // NOT awaited on purpose — this makes one external API call per
