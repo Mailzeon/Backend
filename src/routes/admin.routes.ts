@@ -484,10 +484,11 @@ router.get('/wallet-transactions', async (req: Request, res: Response) => {
 // Platform-wide view of every worker OR customer who's referred someone,
 // how many they've referred, and total payouts — the per-account "Refer &
 // Earn" page (see user.routes.ts /me/referral) only shows one person's
-// own numbers. Covers BOTH independent referral programs (see
-// Order.model.ts field comments) in one combined, role-tagged list —
-// this used to hardcode role: 'worker' only, silently missing every
-// customer referrer entirely.
+// own numbers. CROSS-ROLE: a referrer's list can now contain a genuine mix
+// of workers and customers (see auth.service.ts register()), so this no
+// longer filters the referred list by the referrer's own role — it used
+// to, which silently hid every cross-role referral from this view even
+// though the payout itself was already working correctly.
 router.get('/referrals', async (_req: Request, res: Response) => {
   const referrers = await User.find({ role: { $in: ['worker', 'customer'] } })
     .select('name email role referralCode')
@@ -497,7 +498,7 @@ router.get('/referrals', async (_req: Request, res: Response) => {
     referrers
       .filter(r => r.referralCode)
       .map(async r => {
-        const referred = await User.find({ referredBy: r._id, role: r.role }).select('name createdAt').lean();
+        const referred = await User.find({ referredBy: r._id }).select('name role createdAt').lean();
         if (referred.length === 0) return null;
 
         const totalPaidAgg = await Transaction.aggregate([
