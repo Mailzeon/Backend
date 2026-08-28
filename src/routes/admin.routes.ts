@@ -603,8 +603,9 @@ router.get('/leaderboard', async (_req: Request, res: Response) => {
 // Customer leaderboard, admin view — same "full list, real activity only"
 // shape as the worker one above. No CustomerLevel collection exists (unlike
 // WorkerLevel for workers), so this aggregates directly off completed
-// Orders, same query as the customer-facing GET /api/leaderboard/customer,
-// just without the top-10 limit.
+// Orders, same query as the customer-facing GET /api/leaderboard/customer
+// (spend-ranked — see that route's comment for why), just without the
+// top-10 limit.
 router.get('/leaderboard/customer', async (_req: Request, res: Response) => {
   const top = await Order.aggregate([
     { $match: { status: 'completed' } },
@@ -615,7 +616,7 @@ router.get('/leaderboard/customer', async (_req: Request, res: Response) => {
         totalSpent: { $sum: '$amount' },
       },
     },
-    { $sort: { completedOrders: -1, totalSpent: -1, _id: 1 } },
+    { $sort: { totalSpent: -1, completedOrders: -1, _id: 1 } },
     {
       $lookup: {
         from: 'users',
