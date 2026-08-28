@@ -48,12 +48,15 @@ router.get('/', authenticate, requireRole('worker'), async (req: Request, res: R
 // Customer-facing leaderboard. Unlike workers, customers don't have a
 // dedicated stats collection (no CustomerLevel equivalent to WorkerLevel) —
 // so this aggregates directly off completed Orders instead. Ranked by
-// completed-order count first, total amount spent as the tie-breaker
-// (mirrors the worker leaderboard's completedOrders -> averageRating
-// tie-break shape). Only counts orders with status 'completed' — same
-// "must have a real result" bar as the worker side's completedOrders > 0
-// filter, so a customer who just registered (0 completed orders) doesn't
-// show up ranked by MongoDB's natural/insertion order.
+// TOTAL SPENT first, completed-order count as the tie-breaker — the goal
+// here is revenue and encouraging spend, not order volume, so a customer
+// who places fewer but bigger orders should outrank one who places lots of
+// small ones (deliberately different from the worker leaderboard, which
+// stays performance/volume-based). Only counts orders with status
+// 'completed' — same "must have a real result" bar as the worker side's
+// completedOrders > 0 filter, so a customer who just registered (0
+// completed orders) doesn't show up ranked by MongoDB's natural/insertion
+// order.
 router.get('/customer', authenticate, requireRole('customer'), async (req: Request, res: Response) => {
   const top = await Order.aggregate([
     { $match: { status: 'completed' } },
@@ -64,7 +67,7 @@ router.get('/customer', authenticate, requireRole('customer'), async (req: Reque
         totalSpent: { $sum: '$amount' },
       },
     },
-    { $sort: { completedOrders: -1, totalSpent: -1, _id: 1 } },
+    { $sort: { totalSpent: -1, completedOrders: -1, _id: 1 } },
     { $limit: 10 },
     {
       $lookup: {
@@ -103,8 +106,8 @@ router.get('/customer', authenticate, requireRole('customer'), async (req: Reque
       {
         $match: {
           $or: [
-            { completedOrders: { $gt: myStats.completedOrders } },
-            { completedOrders: myStats.completedOrders, totalSpent: { $gt: myStats.totalSpent } },
+            { totalSpent: { $gt: myStats.totalSpent } },
+            { totalSpent: myStats.totalSpent, completedOrders: { $gt: myStats.completedOrders } },
           ],
         },
       },
