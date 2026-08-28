@@ -202,3 +202,61 @@ export async function checkIpRisk(ip: string): Promise<IpRiskResult> {
  *    keeps working as the fallback underneath all of this regardless.
  * ═══════════════════════════════════════════════════════════════════════
  */
+
+// ─── IP → country lookup ────────────────────────────────────────────────
+// Separate, deliberately lightweight function (its own fetch, sharing the
+// SAME Abstract key pool/rotation state as checkIpRisk above — every call
+// here spends one credit from that same monthly bucket, so it adds to
+// existing usage rather than being free) — used by user.routes.ts's
+// Telegram-contact-phone mismatch check (see auth.controller.ts) to flag
+// the specific case of an Indian IP sharing a foreign Telegram phone
+// number, which fake/temporary-number services are commonly used for.
+// Kept as its own function rather than folded into checkAbstract() above
+// so this new, less-tested code path can never affect the
+// registration-time risk check that's already relied on in production.
+//
+// NOTE: Abstract's exact JSON field name for the country code under
+// `fields=location` hasn't been confirmed against a live response (no API
+// key available in this environment to test against) — the parsing below
+// tries the field names Abstract uses across its other geolocation
+// products, and logs the raw response once if none of them match, so the
+// first real call in production will immediately reveal the actual shape
+// if this guess is wrong. Fails open (returns null) either way — this is
+// never used to block anyone, only to sharpen one warning message.
+export async function getIpCountryCode(ip: string): Promise<string | null> {
+  const keys = getConfiguredAbstractKeys();
+  if (keys.length === 0) return null;
+
+  for (let attempt = 0; attempt < keys.length; attempt++) {
+    const picked = await pickAndAdvanceKey(keys);
+    if (!picked) return null; // every configured key exhausted this month
+
+    try {
+      const url = `https://ip-intelligence.abstractapi.com/v1/?api_key=${encodeURIComponent(picked.key)}&ip_address=${encodeURIComponent(ip)}&fields=location`;
+      const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(6000) });
+
+      if (res.status === 422) {
+        await markExhausted(picked.index);
+        continue; // try the next available key
+      }
+      if (!res.ok) {
+        console.error(`[IpIntelligence] Abstract (country lookup) returned ${res.status}`);
+        return null;
+      }
+
+      const data = (await res.json()) as Record<string, any>;
+      const countryCode: string | undefined =
+        data.location?.country_code ?? data.country_code ?? data.country?.code;
+
+      if (!countryCode) {
+        console.warn('[IpIntelligence] Country lookup: no known country_code field in response, raw:', JSON.stringify(data));
+        return null;
+      }
+      return String(countryCode).toUpperCase();
+    } catch (err) {
+      console.error('[IpIntelligence] Abstract country lookup failed:', err);
+      return null;
+    }
+  }
+  return null;
+}
