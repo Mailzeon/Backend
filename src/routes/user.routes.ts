@@ -12,6 +12,7 @@ import { userService } from '../services/user.service';
 import { generateUniqueReferralCode } from '../services/auth.service';
 import { verifyPhone } from '../utils/phoneVerification';
 import { checkEmailExists } from '../utils/emailVerification';
+import { getIpCountryCode } from '../utils/ipIntelligence';
 
 const router = Router();
 router.use(authenticate);
@@ -206,6 +207,53 @@ router.get('/me/referral', requireRole('worker', 'customer'), async (req: Reques
 router.delete('/me', requireRole('customer', 'worker'), async (req: Request, res: Response) => {
   await userService.deleteAccount(req.user!._id.toString(), res);
   sendSuccess(res, 'Your account has been deleted.', {});
+});
+
+// Called by the Profile page's "Fill in from Telegram" flow (see
+// lib/telegram.ts requestTelegramPhoneNumber() / ProfilePage.tsx) ONLY
+// when the number Telegram handed back turned out to be non-Indian — this
+// endpoint exists purely to pick the right WORDING for the message shown,
+// nothing here ever saves or verifies a phone number itself.
+//
+// Sharpens the message for one specific, common fraud pattern: someone
+// physically in India registering their Telegram account with a foreign
+// (often US/Canada) temporary/virtual number from an SMS-receiving
+// service, typically to make a throwaway account harder to trace. If the
+// REQUEST is coming from an Indian IP but the Telegram number is foreign,
+// that mismatch is the actual signal worth calling out by name. If the
+// request's own IP is genuinely foreign too (a real US/Canada-based
+// person), there's nothing suspicious about their own foreign number
+// matching their own foreign IP — same neutral "not an Indian number"
+// message as before, no accusation.
+//
+// Soft/informational only: never blocks anything, only picks wording, and
+// fails open to the neutral message if the IP lookup is unavailable — see
+// getIpCountryCode()'s own fail-open behavior.
+router.post('/me/check-telegram-phone-country', requireRole('worker', 'customer'), async (req: Request, res: Response) => {
+  const { phoneNumber } = req.body as { phoneNumber?: string };
+  const NEUTRAL_MESSAGE = "That doesn't look like an Indian number — please enter your Indian mobile number manually to continue.";
+
+  if (typeof phoneNumber !== 'string' || !phoneNumber.trim()) {
+    sendSuccess(res, 'Checked.', { message: NEUTRAL_MESSAGE });
+    return;
+  }
+
+  const digitsOnly = phoneNumber.replace(/\D/g, '');
+  const isIndianNumber = /^(91)?[6-9]\d{9}$/.test(digitsOnly) && (digitsOnly.length === 10 || digitsOnly.length === 12);
+  if (isIndianNumber) {
+    // Shouldn't normally reach here — the frontend only calls this when
+    // its own Indian-number check already failed — but if it somehow does,
+    // there's nothing to warn about.
+    sendSuccess(res, 'Checked.', { message: null });
+    return;
+  }
+
+  const ipCountry = req.ip ? await getIpCountryCode(req.ip) : null;
+  const message = ipCountry === 'IN'
+    ? "This looks like a temporary or foreign number, not your real one — Telegram accounts registered from India with a non-Indian number are usually virtual/temporary SMS numbers. Please enter your real Indian mobile number to continue."
+    : NEUTRAL_MESSAGE;
+
+  sendSuccess(res, 'Checked.', { message });
 });
 
 export default router;
