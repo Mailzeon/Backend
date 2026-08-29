@@ -13,6 +13,7 @@ import { generateUniqueReferralCode } from '../services/auth.service';
 import { verifyPhone } from '../utils/phoneVerification';
 import { checkEmailExists } from '../utils/emailVerification';
 import { getIpCountryCode } from '../utils/ipIntelligence';
+import { parsePhoneCountry } from '../utils/callingCodes';
 
 const router = Router();
 router.use(authenticate);
@@ -94,11 +95,37 @@ router.put('/profile', async (req: Request, res: Response) => {
     // since that's gated on phoneVerified being true.
     const alreadyVerifiedSameNumber = trimmedPhone === req.user!.phone && req.user!.phoneVerified;
     if (!alreadyVerifiedSameNumber) {
-      if (!/^[6-9]\d{9}$/.test(trimmedPhone)) {
+      // NEW: two accepted shapes now instead of one.
+      //   1. Bare 10-digit Indian mobile — unchanged, original behavior.
+      //   2. Full "+"-prefixed international number — ONLY accepted when
+      //      the number's own calling code's country matches the country
+      //      this very request's IP is coming from (see
+      //      utils/callingCodes.ts + utils/ipIntelligence.ts
+      //      getIpCountryCode()). This exists for genuinely-foreign
+      //      accounts (e.g. a Telegram-linked worker whose real number is
+      //      a US/UK/etc. one — see lib/telegram.ts on the frontend) —
+      //      it's deliberately NOT "any foreign number is fine", only
+      //      ones a real IP-location match backs up. Anyone whose number
+      //      doesn't match either shape falls through to the same
+      //      Indian-only error as always.
+      const isIndianShape = /^[6-9]\d{9}$/.test(trimmedPhone);
+      let e164ToVerify: string | null = isIndianShape ? `+91${trimmedPhone}` : null;
+      let isForeignPath = false;
+
+      if (!isIndianShape && trimmedPhone.startsWith('+')) {
+        const parsed = parsePhoneCountry(trimmedPhone);
+        const ipCountry = parsed && req.ip ? await getIpCountryCode(req.ip) : null;
+        if (parsed && ipCountry && parsed.countries.includes(ipCountry)) {
+          e164ToVerify = trimmedPhone;
+          isForeignPath = true;
+        }
+      }
+
+      if (!e164ToVerify) {
         sendError(res, 'Enter a valid 10-digit Indian mobile number.', 400);
         return;
       }
-      const phoneCheck = await verifyPhone(trimmedPhone);
+      const phoneCheck = await verifyPhone(e164ToVerify);
       if (phoneCheck.checkFailed) {
         sendError(res, 'Could not verify this phone number right now. Please try again in a moment.', 503);
         return;
@@ -113,7 +140,13 @@ router.put('/profile', async (req: Request, res: Response) => {
         );
         return;
       }
-      updates.phone = trimmedPhone;
+      // Saved exactly as submitted — bare 10-digit for the Indian path
+      // (unchanged), full "+"-prefixed E.164 for the foreign path. Every
+      // other place that reads user.phone (order.service.ts, Cashfree's
+      // customer_phone in payment.service.ts, wallet.routes.ts) passes it
+      // straight through with no reformatting of its own — see the
+      // Cashfree note below.
+      updates.phone = isForeignPath ? e164ToVerify : trimmedPhone;
       updates.phoneVerified = true;
     }
   }
@@ -210,31 +243,37 @@ router.delete('/me', requireRole('customer', 'worker'), async (req: Request, res
 });
 
 // Called by the Profile page's "Fill in from Telegram" flow (see
-// lib/telegram.ts requestTelegramPhoneNumber() / ProfilePage.tsx) ONLY
-// when the number Telegram handed back turned out to be non-Indian — this
-// endpoint exists purely to pick the right WORDING for the message shown,
-// nothing here ever saves or verifies a phone number itself.
+// lib/telegram.ts requestTelegramPhoneNumber() / ProfilePage.tsx) whenever
+// the number Telegram handed back isn't a bare Indian one. Decides one of
+// two outcomes:
+//   - accepted:true  — the number's own calling code genuinely matches
+//     the country this request's IP is coming from (a real foreign
+//     worker/customer using their own real foreign number) — the number
+//     is handed straight back ready to save, no manual retyping needed.
+//     Saving it still goes through the SAME PUT /profile foreign-number
+//     path above (same verifyPhone() check, same IP-match requirement
+//     re-checked server-side) — this endpoint only decides what the
+//     frontend fills into the field, it never saves anything itself.
+//   - accepted:false — either the IP doesn't back up the number's claimed
+//     country, or the calling code isn't one we recognize (see
+//     utils/callingCodes.ts). Sharpens the message for one specific,
+//     common fraud pattern in the reject case: someone physically in
+//     India registering their Telegram account with a foreign (often
+//     US/Canada) temporary/virtual number from an SMS-receiving service,
+//     typically to make a throwaway account harder to trace — if the
+//     REQUEST is coming from an Indian IP but the Telegram number claims
+//     to be foreign, that mismatch is the actual signal worth calling out
+//     by name, rather than a generic "not Indian" message.
 //
-// Sharpens the message for one specific, common fraud pattern: someone
-// physically in India registering their Telegram account with a foreign
-// (often US/Canada) temporary/virtual number from an SMS-receiving
-// service, typically to make a throwaway account harder to trace. If the
-// REQUEST is coming from an Indian IP but the Telegram number is foreign,
-// that mismatch is the actual signal worth calling out by name. If the
-// request's own IP is genuinely foreign too (a real US/Canada-based
-// person), there's nothing suspicious about their own foreign number
-// matching their own foreign IP — same neutral "not an Indian number"
-// message as before, no accusation.
-//
-// Soft/informational only: never blocks anything, only picks wording, and
-// fails open to the neutral message if the IP lookup is unavailable — see
-// getIpCountryCode()'s own fail-open behavior.
+// Fails to the reject path (with the neutral message) if the IP lookup is
+// unavailable — see getIpCountryCode()'s own fail-open behavior; this
+// never crashes or hangs the profile page either way.
 router.post('/me/check-telegram-phone-country', requireRole('worker', 'customer'), async (req: Request, res: Response) => {
   const { phoneNumber } = req.body as { phoneNumber?: string };
   const NEUTRAL_MESSAGE = "That doesn't look like an Indian number — please enter your Indian mobile number manually to continue.";
 
   if (typeof phoneNumber !== 'string' || !phoneNumber.trim()) {
-    sendSuccess(res, 'Checked.', { message: NEUTRAL_MESSAGE });
+    sendSuccess(res, 'Checked.', { accepted: false, message: NEUTRAL_MESSAGE });
     return;
   }
 
@@ -243,17 +282,25 @@ router.post('/me/check-telegram-phone-country', requireRole('worker', 'customer'
   if (isIndianNumber) {
     // Shouldn't normally reach here — the frontend only calls this when
     // its own Indian-number check already failed — but if it somehow does,
-    // there's nothing to warn about.
-    sendSuccess(res, 'Checked.', { message: null });
+    // there's nothing to warn about, and no reason to route it through the
+    // "foreign" path either.
+    sendSuccess(res, 'Checked.', { accepted: false, message: null });
     return;
   }
 
+  const parsed = parsePhoneCountry(phoneNumber);
   const ipCountry = req.ip ? await getIpCountryCode(req.ip) : null;
+
+  if (parsed && ipCountry && parsed.countries.includes(ipCountry)) {
+    sendSuccess(res, 'Checked.', { accepted: true, phoneNumber });
+    return;
+  }
+
   const message = ipCountry === 'IN'
     ? "This looks like a temporary or foreign number, not your real one — Telegram accounts registered from India with a non-Indian number are usually virtual/temporary SMS numbers. Please enter your real Indian mobile number to continue."
     : NEUTRAL_MESSAGE;
 
-  sendSuccess(res, 'Checked.', { message });
+  sendSuccess(res, 'Checked.', { accepted: false, message });
 });
 
 export default router;
