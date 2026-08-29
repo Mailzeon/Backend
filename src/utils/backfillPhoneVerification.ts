@@ -31,7 +31,16 @@ export async function backfillPhoneVerification(): Promise<void> {
 
   let verifiedCount = 0;
   for (const user of candidates) {
-    const result = await verifyPhone(user.phone!);
+    // CHANGED: verifyPhone() now takes a full E.164 number instead of
+    // adding +91 internally (see phoneVerification.ts — needed once
+    // foreign numbers, stored already-E.164, became possible via
+    // user.routes.ts PUT /profile's foreign-number path). Every phone
+    // saved in the DB before that feature existed is a bare Indian
+    // 10-digit number with no "+", so it still needs +91 prepended here;
+    // anything already "+"-prefixed (a foreign number saved after that
+    // feature shipped) is passed through as-is.
+    const e164 = user.phone!.startsWith('+') ? user.phone! : `+91${user.phone}`;
+    const result = await verifyPhone(e164);
     if (result.isValid) {
       await User.updateOne({ _id: user._id }, { phoneVerified: true });
       verifiedCount++;
