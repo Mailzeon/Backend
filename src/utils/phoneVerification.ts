@@ -55,7 +55,7 @@ const STATE_ID = 'abstract-phone-intelligence';
  * auth.service.ts register()) show a "try again shortly" message for the
  * former, not a false "invalid number" claim.
  */
-export async function verifyPhone(phone: string): Promise<PhoneCheckResult> {
+export async function verifyPhone(e164Phone: string): Promise<PhoneCheckResult> {
   const keys = getConfiguredKeys();
   if (keys.length === 0) {
     console.warn('[PhoneVerification] No ABSTRACT_PHONE_API_KEYS configured — cannot verify.');
@@ -69,7 +69,7 @@ export async function verifyPhone(phone: string): Promise<PhoneCheckResult> {
       return { isValid: false, isVoip: false, checkFailed: true };
     }
 
-    const outcome = await tryKey(picked.key, phone);
+    const outcome = await tryKey(picked.key, e164Phone);
     if (outcome.quotaExhausted) {
       await markExhausted(picked.index);
       continue; // try the next available key
@@ -131,15 +131,18 @@ async function markExhausted(index: number): Promise<void> {
 
 async function tryKey(
   apiKey: string,
-  phone: string
+  e164Phone: string
 ): Promise<{ quotaExhausted: boolean; result: PhoneCheckResult }> {
   try {
-    // Every number on this platform is a 10-digit Indian mobile number
-    // with no country code (see the regex in auth.validator.ts) — Phone
-    // Intelligence expects something close to E.164, so +91 is prepended
-    // here rather than relying on a country param.
-    const e164 = `+91${phone.replace(/\D/g, '')}`;
-    const url = `https://phoneintelligence.abstractapi.com/v1/?api_key=${encodeURIComponent(apiKey)}&phone=${encodeURIComponent(e164)}`;
+    // CHANGED: this now takes a FULL E.164 number (with country code
+    // already attached) instead of a bare 10-digit Indian number with +91
+    // hardcoded on here — see user.routes.ts PUT /profile's foreign-number
+    // path (added for genuinely-foreign accounts whose IP matches their
+    // own number's country) for why a caller might now pass e.g.
+    // "+13234511067". The original all-Indian caller (auth.service.ts
+    // register()) now builds its own "+91..." string before calling this,
+    // so its behavior is unchanged.
+    const url = `https://phoneintelligence.abstractapi.com/v1/?api_key=${encodeURIComponent(apiKey)}&phone=${encodeURIComponent(e164Phone)}`;
     const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(8000) });
 
     if (res.status === 422) {
