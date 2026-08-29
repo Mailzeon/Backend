@@ -99,7 +99,7 @@ export const authService = {
     // below purely so a locked-out worker gets that (more specific) error
     // rather than a generic phone failure, but either check failing stops
     // registration.
-    const phoneCheck = await verifyPhone(phone);
+    const phoneCheck = await verifyPhone(`+91${phone.replace(/\D/g, '')}`);
     if (phoneCheck.checkFailed) {
       throwHttpError('Could not verify your phone number right now. Please try again in a moment.', 503);
     }
