@@ -119,7 +119,7 @@ router.get('/analytics', async (_req: Request, res: Response) => {
 
   const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-  const [revenueAgg, ordersAgg] = await Promise.all([
+  const [revenueAgg, ordersAgg, signupsAgg] = await Promise.all([
     Order.aggregate([
       { $match: { status: 'completed', completedAt: { $gte: sevenDaysAgo } } },
       {
@@ -142,6 +142,22 @@ router.get('/analytics', async (_req: Request, res: Response) => {
         },
       },
     ]),
+    // NEW: signups per day, split by role — this is the "who's signing up"
+    // data Vercel Web Analytics can't show for free (custom events are a
+    // Pro-plan-only feature there — see docs.vercel.com/analytics). No new
+    // collection or event-logging needed for this though: every signup is
+    // already a User document with its own createdAt, so this is just
+    // grouping the data that already exists, same as the two aggregations
+    // above it.
+    User.aggregate([
+      { $match: { createdAt: { $gte: sevenDaysAgo }, role: { $in: ['customer', 'worker'] }, isDeleted: { $ne: true } } },
+      {
+        $group: {
+          _id:      { date: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, role: '$role' },
+          signups:  { $sum: 1 },
+        },
+      },
+    ]),
   ]);
 
   const revenueMap: Record<string, number> = {};
@@ -151,6 +167,13 @@ router.get('/analytics', async (_req: Request, res: Response) => {
   const ordersMap: Record<string, number> = {};
   ordersAgg.forEach(o => { ordersMap[o._id] = o.orders; });
 
+  const customerSignupsMap: Record<string, number> = {};
+  const workerSignupsMap: Record<string, number> = {};
+  signupsAgg.forEach((s: any) => {
+    if (s._id.role === 'customer') customerSignupsMap[s._id.date] = s.signups;
+    else workerSignupsMap[s._id.date] = s.signups;
+  });
+
   const days = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date();
@@ -158,10 +181,12 @@ router.get('/analytics', async (_req: Request, res: Response) => {
     d.setHours(0, 0, 0, 0);
     const dateStr = d.toISOString().split('T')[0];
     days.push({
-      day:        DAY_NAMES[d.getDay()],
-      revenue:    revenueMap[dateStr] ?? 0,
-      commission: commissionMap[dateStr] ?? 0,
-      orders:     ordersMap[dateStr] ?? 0,
+      day:              DAY_NAMES[d.getDay()],
+      revenue:          revenueMap[dateStr] ?? 0,
+      commission:       commissionMap[dateStr] ?? 0,
+      orders:           ordersMap[dateStr] ?? 0,
+      customerSignups:  customerSignupsMap[dateStr] ?? 0,
+      workerSignups:    workerSignupsMap[dateStr] ?? 0,
     });
   }
 
