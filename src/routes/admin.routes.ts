@@ -29,6 +29,7 @@ import { computeLiveOnlineWorkerCount } from '../socket/socket';
 import { userService } from '../services/user.service';
 import { orderHistoryService } from '../services/orderHistory.service';
 import { sendSuccess, sendError } from '../utils/response';
+import { submitToIndexNow, ALL_PUBLIC_URLS } from '../utils/indexNow';
 import { Request, Response }  from 'express';
 
 const router = Router();
@@ -784,5 +785,25 @@ router.post('/reset-test-data', async (req: Request, res: Response) => {
   });
 });
 
+
+// ── SEO: manual IndexNow submission ────────────────────────────────────────
+// One-click way to tell Bing/Yandex/other IndexNow participants "come
+// re-crawl the public marketing pages" — see utils/indexNow.ts for why
+// this exists and what it does and doesn't cover (notably: not Google,
+// which has its own separate "Request Indexing" in Search Console).
+// Deliberately a manual admin action rather than something that fires
+// automatically on every deploy — this whole site is a small, mostly-
+// static set of pages that only meaningfully change every so often, so an
+// admin clicking this right after a real content update is more useful
+// (and less spammy toward the IndexNow endpoint) than pinging on every
+// redeploy regardless of whether anything on these pages actually changed.
+router.post('/seo/indexnow-ping', async (_req: Request, res: Response) => {
+  const ok = await submitToIndexNow(ALL_PUBLIC_URLS);
+  if (!ok) {
+    sendError(res, 'IndexNow submission failed — check server logs for details.', 502);
+    return;
+  }
+  sendSuccess(res, `Submitted ${ALL_PUBLIC_URLS.length} URLs to IndexNow.`, { urls: ALL_PUBLIC_URLS });
+});
 
 export default router;
