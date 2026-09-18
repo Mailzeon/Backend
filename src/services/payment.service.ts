@@ -14,6 +14,27 @@ const throwErr = (msg: string, code = 400): never => {
   throw Object.assign(new Error(msg), { statusCode: code });
 };
 
+// Cashfree's own API docs (every example, across orders/payment-links/
+// subscriptions) show customer_phone as a bare 10-digit Indian number —
+// never once with a "+" or country code — and their docs explicitly say
+// "you can pass dummy details if your use case does not require the
+// customer details", which this leans on directly. Since
+// resolvePhoneForCountry() (see utils/callingCodes.ts, used at
+// registration and profile-update time) can now save a genuinely-foreign
+// number like "+13234511067" for an IP-verified foreign customer, that
+// value must NEVER be forwarded to Cashfree as-is — sending an
+// unrecognized shape to a field their validation likely expects in a
+// specific format risked the entire order-creation call failing outright
+// for that customer, which would have silently broken checkout for
+// exactly the foreign-number customers the earlier feature was built to
+// support. A safe, clearly-fake placeholder is substituted instead so the
+// actual payment (UPI/card/netbanking) — which isn't tied to this field
+// working correctly for how Mailzeon uses Cashfree — proceeds normally
+// regardless of what's stored on the customer's own profile.
+function toCashfreePhone(phone: string): string {
+  return /^[6-9]\d{9}$/.test(phone) ? phone : '9999999999';
+}
+
 interface CreateCashfreeOrderResult {
   paymentSessionId: string;
   cashfreeOrderId: string;
@@ -68,7 +89,7 @@ export const paymentService = {
         customer_details: {
           customer_id: customerId,
           customer_email: customerEmail,
-          customer_phone: customerPhone,
+          customer_phone: toCashfreePhone(customerPhone),
         },
         order_meta: {
           return_url: returnUrl,
@@ -122,7 +143,7 @@ export const paymentService = {
         customer_details: {
           customer_id: userId,
           customer_email: userEmail,
-          customer_phone: userPhone,
+          customer_phone: toCashfreePhone(userPhone),
         },
         order_meta: {
           return_url: returnUrl,
