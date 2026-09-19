@@ -25,10 +25,12 @@ router.use(authenticate);
 
 // Update profile / payment details
 router.put('/profile', async (req: Request, res: Response) => {
-  const { name, upiId, bankDetails, phone, email } = req.body;
+  const { name, upiId, upiQrCode, upiVerifiedName, bankDetails, phone, email } = req.body;
   const updates: Record<string, unknown> = {};
   if (name?.trim()) updates.name = name.trim();
   if (upiId !== undefined) updates.upiId = upiId;
+  if (upiQrCode !== undefined) updates.upiQrCode = upiQrCode;
+  if (upiVerifiedName !== undefined) updates.upiVerifiedName = upiVerifiedName;
   if (bankDetails) updates.bankDetails = bankDetails;
 
   // NEW: email can now be changed (it used to be permanently locked at
