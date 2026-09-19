@@ -6,6 +6,16 @@ export interface IWithdrawRequest extends Document {
   amount: number;
   paymentMethod: PaymentMethod;
   upiId?: string;
+  // NEW: for UPI withdrawals, the worker now must ALSO provide a
+  // screenshot of their own UPI app's QR code and type the exact name
+  // that app shows as the account holder — see withdrawal.service.ts
+  // create() for why all three (UPI ID + QR + name) are required
+  // together, not just the ID alone. Admin cross-checks the name against
+  // what their own UPI app shows when actually paying — see
+  // ADMIN_UPI_NAME_INSTRUCTIONS in withdrawal.service.ts for the exact
+  // wording shown to workers about this.
+  upiQrCode?: string;
+  upiVerifiedName?: string;
   bankDetails?: {
     accountHolder: string;
     accountNumber: string;
@@ -37,6 +47,8 @@ const WithdrawRequestSchema = new Schema<IWithdrawRequest>(
       required: true,
     },
     upiId: { type: String, trim: true },
+    upiQrCode: { type: String, trim: true },
+    upiVerifiedName: { type: String, trim: true },
     bankDetails: {
       accountHolder: String,
       accountNumber: String,
