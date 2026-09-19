@@ -62,6 +62,8 @@ export interface IUser extends Document {
   telegramId?: string;
   telegramUsername?: string;
   upiId?: string;
+  upiQrCode?: string;
+  upiVerifiedName?: string;
   bankDetails?: {
     accountHolder: string;
     accountNumber: string;
