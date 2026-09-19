@@ -225,7 +225,16 @@ const UserSchema = new Schema<IUser>(
     },
 
     // ── Payment details (worker withdrawals) ───────────────────────────────
+    // These are DEFAULTS only — saved once from the Profile page so a
+    // worker doesn't have to retype UPI ID + re-upload the same QR + retype
+    // the same name on every single withdrawal request. See
+    // withdrawal.service.ts / app/worker/wallet/page.tsx: the actual
+    // withdrawal-request form pre-fills from these but always stays
+    // editable, since a worker might genuinely want a specific withdrawal
+    // paid to a different UPI ID/account than their usual one.
     upiId: { type: String, trim: true },
+    upiQrCode: { type: String, trim: true },
+    upiVerifiedName: { type: String, trim: true },
     bankDetails: {
       accountHolder: String,
       accountNumber: String,
