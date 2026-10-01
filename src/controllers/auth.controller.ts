@@ -8,10 +8,10 @@ import { setAuthCookie, clearAuthCookie } from '../utils/cookies';
 // kept minimal here as the controller no longer needs to re-check them.
 
 export const register = async (req: Request, res: Response): Promise<void> => {
-  const { name, email, password, role, phone, referralCode, deviceId } = req.body;
+  const { name, email, password, role, phone, referralCode, deviceId, deviceModelHint } = req.body;
 
   const { user, token } = await authService.register(
-    { name, email, password, role, phone, referralCode, deviceId },
+    { name, email, password, role, phone, referralCode, deviceId, deviceModelHint },
     req.ip,
     req.headers['user-agent']
   );
@@ -47,8 +47,8 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const login = async (req: Request, res: Response): Promise<void> => {
-  const { email, password, deviceId } = req.body;
-  const { user, token } = await authService.login(email, password, req.ip, deviceId, req.headers['user-agent']);
+  const { email, password, deviceId, deviceModelHint } = req.body;
+  const { user, token } = await authService.login(email, password, req.ip, deviceId, req.headers['user-agent'], deviceModelHint);
   setAuthCookie(res, token);
   // See the comment on register() above for why this is back in the body.
   sendSuccess(res, 'Logged in successfully.', { user, token });
@@ -106,7 +106,7 @@ export const telegramCheckUser = async (req: Request, res: Response): Promise<vo
 export const telegramLogin = async (req: Request, res: Response): Promise<void> => {
   const { initData, role, referralCode } = req.body;
   const { user, token } = await authService.telegramLogin(
-    initData, role, referralCode, req.ip, req.body.deviceId, req.headers['user-agent']
+    initData, role, referralCode, req.ip, req.body.deviceId, req.headers['user-agent'], req.body.deviceModelHint
   );
   // BUG FIX (Aug 2026): deliberately NOT calling setAuthCookie() here.
   // Telegram's in-app WebView can share cookie storage with the phone's
@@ -125,7 +125,7 @@ export const telegramLogin = async (req: Request, res: Response): Promise<void> 
 export const telegramLink = async (req: Request, res: Response): Promise<void> => {
   const { initData, email, password } = req.body;
   const { user, token } = await authService.linkTelegramAccount(
-    initData, email, password, req.ip, req.body.deviceId, req.headers['user-agent']
+    initData, email, password, req.ip, req.body.deviceId, req.headers['user-agent'], req.body.deviceModelHint
   );
   // Same reasoning as telegramLogin() above — no cookie, Bearer-token only.
   sendSuccess(res, 'Your Telegram account is now linked.', { user, token });
