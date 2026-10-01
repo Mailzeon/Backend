@@ -28,6 +28,10 @@ interface RegisterInput {
   phone: string;
   referralCode?: string;
   deviceId?: string;
+  // Real device model from Chromium's User-Agent Client Hints (see
+  // deviceDescription.ts's big comment for why this exists at all) —
+  // undefined on Firefox/Safari, or if the browser call itself failed.
+  deviceModelHint?: string;
 }
 
 interface AuthResult {
@@ -67,7 +71,7 @@ export const generateUniqueReferralCode = async (): Promise<string> => {
 
 export const authService = {
   async register(input: RegisterInput, ip?: string, userAgent?: string): Promise<AuthResult> {
-    const { name, email, password, role, phone, referralCode, deviceId } = input;
+    const { name, email, password, role, phone, referralCode, deviceId, deviceModelHint } = input;
 
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) throwHttpError('An account with this email already exists.', 409);
@@ -203,7 +207,7 @@ export const authService = {
       phone: phone.trim(), phoneVerified: true,
       registrationIp: ip, lastLoginIp: ip,
       registrationDevice: deviceId, lastLoginDevice: deviceId,
-      registrationDeviceLabel: describeDevice(userAgent), lastLoginDeviceLabel: describeDevice(userAgent),
+      registrationDeviceLabel: describeDevice(userAgent, deviceModelHint), lastLoginDeviceLabel: describeDevice(userAgent, deviceModelHint),
       referralCode: newReferralCode,
       referredBy,
       // See the auto-approval block above — explicit here so it overrides
@@ -241,7 +245,7 @@ export const authService = {
     return { user: user.toJSON(), token };
   },
 
-  async login(email: string, password: string, ip?: string, deviceId?: string, userAgent?: string): Promise<AuthResult> {
+  async login(email: string, password: string, ip?: string, deviceId?: string, userAgent?: string, deviceModelHint?: string): Promise<AuthResult> {
     // +password because select: false in schema
     const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
     if (!user) throwHttpError('Invalid email or password.', 401);
@@ -252,7 +256,7 @@ export const authService = {
     if (ip || deviceId) {
       if (ip) user!.lastLoginIp = ip;
       if (deviceId) user!.lastLoginDevice = deviceId;
-      if (userAgent) user!.lastLoginDeviceLabel = describeDevice(userAgent);
+      if (userAgent) user!.lastLoginDeviceLabel = describeDevice(userAgent, deviceModelHint);
 
       // Anti-evasion, part 2: if this IP AND device both have an active
       // lock (from a DIFFERENT, previously-struck account), inherit it
@@ -307,7 +311,8 @@ export const authService = {
     referralCode: string | undefined,
     ip?: string,
     deviceId?: string,
-    userAgent?: string
+    userAgent?: string,
+    deviceModelHint?: string
   ): Promise<AuthResult> {
     const { user: tgUser } = verifyTelegramInitData(initData);
     const telegramId = String(tgUser.id);
@@ -384,7 +389,7 @@ export const authService = {
         telegramUsername: tgUser.username,
         registrationIp: ip, lastLoginIp: ip,
         registrationDevice: deviceId, lastLoginDevice: deviceId,
-        registrationDeviceLabel: describeDevice(userAgent), lastLoginDeviceLabel: describeDevice(userAgent),
+        registrationDeviceLabel: describeDevice(userAgent, deviceModelHint), lastLoginDeviceLabel: describeDevice(userAgent, deviceModelHint),
         referralCode: await generateUniqueReferralCode(),
         referredBy,
         ...(role === 'worker'
@@ -411,7 +416,7 @@ export const authService = {
 
       if (ip) user.lastLoginIp = ip;
       if (deviceId) user.lastLoginDevice = deviceId;
-      if (userAgent) user.lastLoginDeviceLabel = describeDevice(userAgent);
+      if (userAgent) user.lastLoginDeviceLabel = describeDevice(userAgent, deviceModelHint);
       if (tgUser.username) user.telegramUsername = tgUser.username;
 
       if ((ip || deviceId) && user.role === 'worker') {
@@ -445,7 +450,8 @@ export const authService = {
     password: string,
     ip?: string,
     deviceId?: string,
-    userAgent?: string
+    userAgent?: string,
+    deviceModelHint?: string
   ): Promise<AuthResult> {
     const { user: tgUser } = verifyTelegramInitData(initData);
     const telegramId = String(tgUser.id);
@@ -478,7 +484,7 @@ export const authService = {
     user!.telegramUsername = tgUser.username;
     if (ip) user!.lastLoginIp = ip;
     if (deviceId) user!.lastLoginDevice = deviceId;
-    if (userAgent) user!.lastLoginDeviceLabel = describeDevice(userAgent);
+    if (userAgent) user!.lastLoginDeviceLabel = describeDevice(userAgent, deviceModelHint);
     await user!.save();
 
     const token = signToken(user!._id, user!.role as UserRole);
