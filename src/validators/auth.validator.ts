@@ -30,6 +30,11 @@ export const registerSchema = z.object({
   // here explicitly — this schema strips any key not listed, and this
   // exact codebase has been bitten by that before (acknowledgedNoPhone).
   deviceId: z.string().trim().max(200).optional(),
+  // Real device model from Chromium's User-Agent Client Hints — see
+  // utils/deviceDescription.ts's big comment on why the plain
+  // User-Agent header can't provide this anymore. Same "must be
+  // declared here or it's silently stripped" rule as deviceId above.
+  deviceModelHint: z.string().trim().max(100).optional(),
 });
 
 export const loginSchema = z.object({
@@ -40,6 +45,7 @@ export const loginSchema = z.object({
   password: z.string()
     .min(1, 'Password is required'),
   deviceId: z.string().trim().max(200).optional(),
+  deviceModelHint: z.string().trim().max(100).optional(),
 });
 
 export const changePasswordSchema = z.object({
@@ -76,10 +82,15 @@ export const telegramLoginSchema = z.object({
   initData: z.string().min(1, 'Missing Telegram init data'),
   role: z.enum(['customer', 'worker']).optional(),
   referralCode: z.string().trim().max(20).optional(),
+  // See registerSchema's deviceModelHint comment — same reasoning, now
+  // wired into the Telegram flow too since Telegram-origin accounts are
+  // exactly the ones that were showing the least accurate device labels.
+  deviceModelHint: z.string().trim().max(100).optional(),
 });
 
 export const telegramLinkSchema = z.object({
   initData: z.string().min(1, 'Missing Telegram init data'),
   email: z.string().email('Enter a valid email address'),
   password: z.string().min(1, 'Password is required'),
+  deviceModelHint: z.string().trim().max(100).optional(),
 });
