@@ -13,7 +13,7 @@ import { generateUniqueReferralCode } from '../services/auth.service';
 import { verifyPhone } from '../utils/phoneVerification';
 import { checkEmailExists } from '../utils/emailVerification';
 import { getIpCountryCode } from '../utils/ipIntelligence';
-import { parsePhoneCountry } from '../utils/callingCodes';
+import { parsePhoneCountry, resolvePhoneForCountry } from '../utils/callingCodes';
 
 const router = Router();
 router.use(authenticate);
@@ -110,23 +110,16 @@ router.put('/profile', async (req: Request, res: Response) => {
       //      ones a real IP-location match backs up. Anyone whose number
       //      doesn't match either shape falls through to the same
       //      Indian-only error as always.
-      const isIndianShape = /^[6-9]\d{9}$/.test(trimmedPhone);
-      let e164ToVerify: string | null = isIndianShape ? `+91${trimmedPhone}` : null;
-      let isForeignPath = false;
-
-      if (!isIndianShape && trimmedPhone.startsWith('+')) {
-        const parsed = parsePhoneCountry(trimmedPhone);
-        const ipCountry = parsed && req.ip ? await getIpCountryCode(req.ip) : null;
-        if (parsed && ipCountry && parsed.countries.includes(ipCountry)) {
-          e164ToVerify = trimmedPhone;
-          isForeignPath = true;
-        }
-      }
-
-      if (!e164ToVerify) {
+      // Shared with registration — see utils/callingCodes.ts
+      // resolvePhoneForCountry(). IP country is only looked up for a
+      // "+"-prefixed number (saves an API credit for the common Indian case).
+      const ipCountry = trimmedPhone.startsWith('+') && req.ip ? await getIpCountryCode(req.ip) : null;
+      const resolved = resolvePhoneForCountry(trimmedPhone, ipCountry);
+      if (resolved.status === 'error') {
         sendError(res, 'Enter a valid 10-digit Indian mobile number.', 400);
         return;
       }
+      const e164ToVerify = resolved.e164;
       const phoneCheck = await verifyPhone(e164ToVerify);
       if (phoneCheck.checkFailed) {
         sendError(res, 'Could not verify this phone number right now. Please try again in a moment.', 503);
@@ -148,7 +141,7 @@ router.put('/profile', async (req: Request, res: Response) => {
       // customer_phone in payment.service.ts, wallet.routes.ts) passes it
       // straight through with no reformatting of its own — see the
       // Cashfree note below.
-      updates.phone = isForeignPath ? e164ToVerify : trimmedPhone;
+      updates.phone = resolved.stored;
       updates.phoneVerified = true;
     }
   }
