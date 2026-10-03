@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { authService } from '../services/auth.service';
 import { sendSuccess } from '../utils/response';
 import { setAuthCookie, clearAuthCookie } from '../utils/cookies';
+import { getIpCountryCode } from '../utils/ipIntelligence';
+import { getCallingCodeForCountry } from '../utils/callingCodes';
 
 // Manual validation checks below are now redundant for well-formed requests
 // since the `validate(schema)` middleware runs first and guarantees shape —
@@ -129,4 +131,45 @@ export const telegramLink = async (req: Request, res: Response): Promise<void> =
   );
   // Same reasoning as telegramLogin() above — no cookie, Bearer-token only.
   sendSuccess(res, 'Your Telegram account is now linked.', { user, token });
+};
+
+// ── Public: which "+NN" badge should the phone field show? ───────────────
+// Called by the register/profile pages on load (logged-out visitors too, so
+// NO auth). Looks up the visitor's IP country and maps it to a calling code.
+//
+// Falls back to India (+91, the original Indian-only behavior) whenever the
+// lookup fails, the IP is private/local, or the country isn't in
+// utils/callingCodes.ts — so this can never break registration, only decide
+// what the badge says. The server re-checks IP vs number at submit time
+// regardless; this endpoint is display-only and grants nothing.
+//
+// Abstract's free tier is tiny, so results are cached per IP in memory
+// (1h for a real answer, 10min for a failed lookup so an exhausted quota
+// isn't hammered by every page load).
+const DETECT_CACHE_MAX = 5000;
+const detectCache = new Map<string, { value: { countryCode: string | null; callingCode: string }; expires: number }>();
+
+export const detectCountryCode = async (req: Request, res: Response): Promise<void> => {
+  const ip = req.ip;
+  const fallback = { countryCode: null as string | null, callingCode: '91' };
+
+  if (!ip || /^(::1|127\.|10\.|192\.168\.|::ffff:127\.)/.test(ip)) {
+    sendSuccess(res, 'Detected.', fallback);
+    return;
+  }
+
+  const hit = detectCache.get(ip);
+  if (hit && hit.expires > Date.now()) {
+    sendSuccess(res, 'Detected.', hit.value);
+    return;
+  }
+
+  const iso = await getIpCountryCode(ip);
+  const callingCode = getCallingCodeForCountry(iso);
+  const value = callingCode ? { countryCode: iso, callingCode } : { countryCode: iso, callingCode: '91' };
+
+  if (detectCache.size >= DETECT_CACHE_MAX) detectCache.clear();
+  detectCache.set(ip, { value, expires: Date.now() + (iso ? 60 : 10) * 60 * 1000 });
+
+  sendSuccess(res, 'Detected.', value);
 };
