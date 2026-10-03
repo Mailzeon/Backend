@@ -6,7 +6,8 @@ import { WorkerLevelModel } from '../models/WorkerLevel.model';
 import { LockedIp } from '../models/LockedIp.model';
 import { LockedDevice } from '../models/LockedDevice.model';
 import { isPermanentLock, resolveEvasionLock } from '../utils/permanentLock';
-import { checkIpRisk } from '../utils/ipIntelligence';
+import { checkIpRisk, getIpCountryCode } from '../utils/ipIntelligence';
+import { resolvePhoneForCountry } from '../utils/callingCodes';
 import { verifyPhone } from '../utils/phoneVerification';
 import { checkEmailExists } from '../utils/emailVerification';
 import { describeDevice } from '../utils/deviceDescription';
@@ -103,7 +104,29 @@ export const authService = {
     // below purely so a locked-out worker gets that (more specific) error
     // rather than a generic phone failure, but either check failing stops
     // registration.
-    const phoneCheck = await verifyPhone(`+91${phone.replace(/\D/g, '')}`);
+    //
+    // Two accepted shapes (see utils/callingCodes.ts resolvePhoneForCountry()):
+    // a bare Indian 10-digit number (original behavior), or a "+"-prefixed
+    // foreign number that is ONLY accepted when its country matches the
+    // country this request's IP resolves to. The IP country lookup (costs
+    // an API credit) is only done when the number actually starts with "+".
+    const rawPhone = phone.trim();
+    const ipCountry = rawPhone.startsWith('+') && ip ? await getIpCountryCode(ip) : null;
+    const resolvedPhone = resolvePhoneForCountry(rawPhone, ipCountry);
+    if (resolvedPhone.status === 'error') {
+      // `return` (not a bare call): throwHttpError's `never` isn't narrowed
+      // through a const arrow function, so this keeps TS's flow analysis happy.
+      if (resolvedPhone.reason === 'ip_mismatch' || resolvedPhone.reason === 'ip_unknown') {
+        return throwHttpError(
+          ipCountry === 'IN'
+            ? 'Foreign phone numbers are only accepted when you sign up from that same country. Please use your real Indian mobile number.'
+            : 'We could not match this phone number to your current location. Foreign numbers are only accepted when you sign up from the same country — please try again without a VPN, or use an Indian mobile number.',
+          400
+        );
+      }
+      return throwHttpError('Enter a valid mobile number.', 400);
+    }
+    const phoneCheck = await verifyPhone(resolvedPhone.e164);
     if (phoneCheck.checkFailed) {
       throwHttpError('Could not verify your phone number right now. Please try again in a moment.', 503);
     }
@@ -204,7 +227,7 @@ export const authService = {
     const user = await User.create({
       name: name.trim(), email, password, role,
       emailVerificationStatus: emailCheck, emailVerifiedCheckedAt: new Date(),
-      phone: phone.trim(), phoneVerified: true,
+      phone: resolvedPhone.stored, phoneVerified: true,
       registrationIp: ip, lastLoginIp: ip,
       registrationDevice: deviceId, lastLoginDevice: deviceId,
       registrationDeviceLabel: describeDevice(userAgent, deviceModelHint), lastLoginDeviceLabel: describeDevice(userAgent, deviceModelHint),
