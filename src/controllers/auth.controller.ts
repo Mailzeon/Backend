@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { authService } from '../services/auth.service';
 import { sendSuccess } from '../utils/response';
 import { setAuthCookie, clearAuthCookie } from '../utils/cookies';
-import { getIpCountryCode } from '../utils/ipIntelligence';
+import { lookupIpCountry } from '../utils/ipIntelligence';
 import { getCallingCodeForCountry } from '../utils/callingCodes';
 
 // Manual validation checks below are now redundant for well-formed requests
@@ -144,14 +144,15 @@ export const telegramLink = async (req: Request, res: Response): Promise<void> =
 // regardless; this endpoint is display-only and grants nothing.
 //
 // Abstract's free tier is tiny, so results are cached per IP in memory
-// (1h for a real answer, 10min for a failed lookup so an exhausted quota
+// (1h for a real answer, 2min for a failed lookup so an exhausted quota
 // isn't hammered by every page load).
 const DETECT_CACHE_MAX = 5000;
-const detectCache = new Map<string, { value: { countryCode: string | null; callingCode: string }; expires: number }>();
+type DetectValue = { countryCode: string | null; callingCode: string; reason: string };
+const detectCache = new Map<string, { value: DetectValue; expires: number }>();
 
 export const detectCountryCode = async (req: Request, res: Response): Promise<void> => {
   const ip = req.ip;
-  const fallback = { countryCode: null as string | null, callingCode: '91' };
+  const fallback: DetectValue = { countryCode: null, callingCode: '91', reason: 'ip_private_or_missing' };
 
   if (!ip || /^(::1|127\.|10\.|192\.168\.|::ffff:127\.)/.test(ip)) {
     sendSuccess(res, 'Detected.', fallback);
@@ -164,12 +165,17 @@ export const detectCountryCode = async (req: Request, res: Response): Promise<vo
     return;
   }
 
-  const iso = await getIpCountryCode(ip);
+  const { country: iso, reason } = await lookupIpCountry(ip);
   const callingCode = getCallingCodeForCountry(iso);
-  const value = callingCode ? { countryCode: iso, callingCode } : { countryCode: iso, callingCode: '91' };
+  // reason: 'ok' | 'unsupported_country' | a lookup-failure cause (no_keys,
+  // keys_exhausted, http_NNN, no_country_field, fetch_error) — display/debug
+  // only, reveals nothing sensitive.
+  const value: DetectValue = callingCode
+    ? { countryCode: iso, callingCode, reason }
+    : { countryCode: iso, callingCode: '91', reason: iso ? 'unsupported_country' : reason };
 
   if (detectCache.size >= DETECT_CACHE_MAX) detectCache.clear();
-  detectCache.set(ip, { value, expires: Date.now() + (iso ? 60 : 10) * 60 * 1000 });
+  detectCache.set(ip, { value, expires: Date.now() + (iso ? 60 : 2) * 60 * 1000 });
 
   sendSuccess(res, 'Detected.', value);
 };
