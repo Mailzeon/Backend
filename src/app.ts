@@ -25,11 +25,21 @@ import telegramWebhookRoutes from './routes/telegramWebhook.routes';
 
 export const app = express();
 
-// Render sits behind a reverse proxy — without this, req.ip resolves to
-// Render's internal proxy address for every request, making IP-based
-// features (rate limiting already relies on this too) useless. `1` means
-// "trust the first hop" — correct for Render's single-proxy setup.
-app.set('trust proxy', 1);
+// Render sits behind reverse proxies — without the right hop count, req.ip
+// resolves to a proxy's internal address instead of the real visitor, making
+// every IP-based feature (rate limiting, IP risk checks, registration/lock
+// IP matching, country detection) useless or shared across all users.
+//
+// FIXED (Oct 2026): this was `1`, but the live chain Render sends is
+//   X-Forwarded-For: <real client>, <Cloudflare edge 172.x>, <Render internal 10.x>
+// (verified via GET /api/_debug/ip with a VPN on: req.ip came back as the
+// internal 10.27.x.x address). Express counts hops from the socket inward:
+// socket -> Render internal -> Cloudflare -> client, so trusting 3 hops makes
+// req.ip the real client. Too LOW = everyone shares a proxy IP (what this
+// fixes); too HIGH = a client could forge X-Forwarded-For to spoof any IP.
+// If Render's hop count ever changes, re-check /api/_debug/ip: `req.ip` must
+// equal your real public IP (https://api.ipify.org).
+app.set('trust proxy', 3);
 
 // ── Security headers ────────────────────────────────────────────────────────
 app.use(helmet({
