@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import {
   register, login, logout, getMe, changePassword, forgotPassword, resetPassword,
-  telegramCheckUser, telegramLogin, telegramLink,
+  telegramCheckUser, telegramLogin, telegramLink, detectCountryCode,
 } from '../controllers/auth.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authLimiter } from '../middleware/rateLimiter.middleware';
@@ -19,6 +19,10 @@ router.post('/login',    authLimiter, validate(loginSchema),    login);
 // New: clears the httpOnly session cookie. No auth middleware needed — see
 // controller comment for why.
 router.post('/logout', logout);
+// Public, no auth, deliberately NOT behind authLimiter (it's called on every
+// register/profile page load and must not eat into login attempts). Cached
+// per IP inside the controller.
+router.get('/detect-country-code', detectCountryCode);
 router.get('/me', authenticate, getMe);
 
 // New: lets any logged-in user (including the seeded admin) change their password.
