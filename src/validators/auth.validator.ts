@@ -20,7 +20,11 @@ export const registerSchema = z.object({
   // before the account is even created — see utils/phoneVerification.ts).
   phone: z.string()
     .trim()
-    .regex(/^[6-9]\d{9}$/, 'Enter a valid 10-digit Indian mobile number'),
+    // Bare 10-digit Indian mobile, OR a "+"-prefixed international number
+    // (only actually accepted if its country matches the request's IP
+    // country — see utils/callingCodes.ts resolvePhoneForCountry(), enforced
+    // in auth.service.ts register()). Shape-only check here.
+    .regex(/^([6-9]\d{9}|\+\d{8,15})$/, 'Enter a valid mobile number'),
   // Optional — invalid/unknown codes are silently ignored at the service
   // layer (see auth.service.ts register()), never rejected here.
   referralCode: z.string().trim().max(20).optional(),
