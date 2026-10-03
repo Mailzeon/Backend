@@ -215,24 +215,36 @@ export async function checkIpRisk(ip: string): Promise<IpRiskResult> {
 // so this new, less-tested code path can never affect the
 // registration-time risk check that's already relied on in production.
 //
-// NOTE: Abstract's exact JSON field name for the country code under
-// `fields=location` hasn't been confirmed against a live response (no API
-// key available in this environment to test against) — the parsing below
-// tries the field names Abstract uses across its other geolocation
-// products, and logs the raw response once if none of them match, so the
-// first real call in production will immediately reveal the actual shape
-// if this guess is wrong. Fails open (returns null) either way — this is
-// never used to block anyone, only to sharpen one warning message.
-export async function getIpCountryCode(ip: string): Promise<string | null> {
+// Response shape confirmed against Abstract's docs (docs.abstractapi.com/
+// ip-intelligence): the country is at `location.country_code`. The `fields`
+// param is deliberately NOT sent here — the docs' own "limiting fields"
+// example uses individual field names (e.g. fields=country,city), and
+// `fields=location` was an unverified guess; omitting it returns the full
+// default response, which always includes `location`. (checkIpRisk above
+// keeps using fields=security — that one is proven in production.)
+//
+// Never throws, fails open: `country: null` is never used to block anyone,
+// only to decide what the phone badge shows / sharpen one warning message.
+// `reason` says WHY it's null so callers (and GET /auth/detect-country-code)
+// can surface the cause instead of a silent null.
+export type IpCountryLookup = { country: string | null; reason: string };
+
+export async function lookupIpCountry(ip: string): Promise<IpCountryLookup> {
   const keys = getConfiguredAbstractKeys();
-  if (keys.length === 0) return null;
+  if (keys.length === 0) {
+    console.warn('[IpIntelligence] Country lookup: no ABSTRACT_IP_API_KEYS configured.');
+    return { country: null, reason: 'no_keys' };
+  }
 
   for (let attempt = 0; attempt < keys.length; attempt++) {
     const picked = await pickAndAdvanceKey(keys);
-    if (!picked) return null; // every configured key exhausted this month
+    if (!picked) {
+      console.warn('[IpIntelligence] Country lookup: every IP API key is exhausted this month.');
+      return { country: null, reason: 'keys_exhausted' };
+    }
 
     try {
-      const url = `https://ip-intelligence.abstractapi.com/v1/?api_key=${encodeURIComponent(picked.key)}&ip_address=${encodeURIComponent(ip)}&fields=location`;
+      const url = `https://ip-intelligence.abstractapi.com/v1/?api_key=${encodeURIComponent(picked.key)}&ip_address=${encodeURIComponent(ip)}`;
       const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(6000) });
 
       if (res.status === 422) {
@@ -241,7 +253,7 @@ export async function getIpCountryCode(ip: string): Promise<string | null> {
       }
       if (!res.ok) {
         console.error(`[IpIntelligence] Abstract (country lookup) returned ${res.status}`);
-        return null;
+        return { country: null, reason: `http_${res.status}` };
       }
 
       const data = (await res.json()) as Record<string, any>;
@@ -249,14 +261,18 @@ export async function getIpCountryCode(ip: string): Promise<string | null> {
         data.location?.country_code ?? data.country_code ?? data.country?.code;
 
       if (!countryCode) {
-        console.warn('[IpIntelligence] Country lookup: no known country_code field in response, raw:', JSON.stringify(data));
-        return null;
+        console.warn('[IpIntelligence] Country lookup: no country_code field in response, raw:', JSON.stringify(data));
+        return { country: null, reason: 'no_country_field' };
       }
-      return String(countryCode).toUpperCase();
+      return { country: String(countryCode).toUpperCase(), reason: 'ok' };
     } catch (err) {
       console.error('[IpIntelligence] Abstract country lookup failed:', err);
-      return null;
+      return { country: null, reason: 'fetch_error' };
     }
   }
-  return null;
+  return { country: null, reason: 'keys_exhausted' };
+}
+
+export async function getIpCountryCode(ip: string): Promise<string | null> {
+  return (await lookupIpCountry(ip)).country;
 }
